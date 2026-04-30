@@ -1,10 +1,10 @@
-## Games@Cloud
+## Nature@Cloud
 
-This project contains three sub-projects:
+This project contains the following sub-projects:
 
-1. `capturetheflag` - the Capture the Flag workload
-2. `fifteenpuzzle` - the 15-Puzzle Solver workload
-3. `gameoflife` - the Conway's Game of Life workload
+1. `fractals` - the Julia Set fractals workload
+2. TBD
+3. TBD
 4. `webserver` - the web server exposing the functionality of the workloads
 
 Refer to the `README.md` files of the sub-projects to get more details about each specific sub-project.

@@ -11,9 +11,9 @@
 
     <modelVersion>4.0.0</modelVersion>
     <groupId>pt.ulisboa.tecnico.cnv</groupId>
-    <artifactId>gameoflife</artifactId>
+    <artifactId>fractals</artifactId>
     <version>1.0.0-SNAPSHOT</version>
-    <name>gameoflife</name>
+    <name>fractals</name>
 
     <properties>
         <maven.compiler.source>11</maven.compiler.source>

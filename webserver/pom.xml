@@ -13,19 +13,7 @@
   <dependencies>
       <dependency>
           <groupId>pt.ulisboa.tecnico.cnv</groupId>
-          <artifactId>gameoflife</artifactId>
-          <version>1.0.0-SNAPSHOT</version>
-          <scope>compile</scope>
-      </dependency>
-      <dependency>
-          <groupId>pt.ulisboa.tecnico.cnv</groupId>
-          <artifactId>fifteenpuzzle</artifactId>
-          <version>1.0.0-SNAPSHOT</version>
-          <scope>compile</scope>
-      </dependency>
-      <dependency>
-          <groupId>pt.ulisboa.tecnico.cnv</groupId>
-          <artifactId>capturetheflag</artifactId>
+          <artifactId>fractals</artifactId>
           <version>1.0.0-SNAPSHOT</version>
           <scope>compile</scope>
       </dependency>

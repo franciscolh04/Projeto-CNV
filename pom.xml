@@ -14,9 +14,7 @@
 		builds the selected projects in order. -->
 	<modules>
 		<module>webserver</module>
-		<module>gameoflife</module>
-		<module>fifteenpuzzle</module>
-		<module>capturetheflag</module>
+		<module>fractals</module>
 	</modules>
 
 </project>
