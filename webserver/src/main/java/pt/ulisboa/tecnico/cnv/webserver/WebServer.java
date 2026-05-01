@@ -1,8 +1,10 @@
 package pt.ulisboa.tecnico.cnv.webserver;
 
 import java.net.InetSocketAddress;
+
 import com.sun.net.httpserver.HttpServer;
 
+import pt.ulisboa.tecnico.cnv.dna.DnaHandler;
 import pt.ulisboa.tecnico.cnv.fractals.FractalsHandler;
 
 public class WebServer {
@@ -11,6 +13,7 @@ public class WebServer {
         server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         server.createContext("/", new RootHandler());
         server.createContext("/fractals", new FractalsHandler());
+        server.createContext("/dna", new DnaHandler());
         server.start();
     }
 }

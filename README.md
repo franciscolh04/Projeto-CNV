@@ -3,7 +3,7 @@
 This project contains the following sub-projects:
 
 1. `fractals` - the Julia Set fractals workload
-2. TBD
+2. `dna` - the DNA Genome matcher workload
 3. TBD
 4. `webserver` - the web server exposing the functionality of the workloads
 

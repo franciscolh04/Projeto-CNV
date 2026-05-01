@@ -15,6 +15,7 @@
 	<modules>
 		<module>webserver</module>
 		<module>fractals</module>
+		<module>dna</module>
 	</modules>
 
 </project>
