@@ -25,7 +25,9 @@ public class Dna {
     }
 
 
-    // Parse <name>:<fasta_content> to [name, fasta_content]
+    /**
+     * Parse <name>:<fasta_content> to [name, fasta_content].
+     */
     protected static String[] parseDnaParam(String param) {
         int colon = param.indexOf(':');
         if (colon < 0) {
@@ -34,7 +36,9 @@ public class Dna {
         return new String[]{param.substring(0, colon), param.substring(colon + 1)};
     }
 
-    // Read fasta file from resources folder
+    /**
+     * Read fasta file from resources folder.
+     */
     protected static String readFastaFile(String filename) throws IOException {
         try (InputStream is = Dna.class.getClassLoader().getResourceAsStream(filename)) {
             if (is == null) {
@@ -44,12 +48,11 @@ public class Dna {
         }
     }
 
-    // Some fasta files have headers with metadata (which we ignore)
-    // followed by the actual sequence
     protected static String parseFastaContent(String fasta) {
         StringBuilder seq = new StringBuilder();
         for (String line : fasta.split("\n")) {
             String trimmed = line.trim();
+            // Ignoring metadata.
             if (!trimmed.isEmpty() && !trimmed.startsWith(">") && !trimmed.startsWith(";")) {
                 seq.append(trimmed.toUpperCase());
             }

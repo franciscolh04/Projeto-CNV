@@ -56,8 +56,8 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
         Map<String, String> parameters = queryToMap(query);
 
         try {
-            String seq1Param = URLDecoder.decode(parameters.get("seq1"), StandardCharsets.UTF_8);
-            String seq2Param = URLDecoder.decode(parameters.get("seq2"), StandardCharsets.UTF_8);
+            String seq1Param = URLDecoder.decode(parameters.getOrDefault("seq1", "seq1:ATGC"), StandardCharsets.UTF_8);
+            String seq2Param = URLDecoder.decode(parameters.getOrDefault("seq2", "seq2:ATGC"), StandardCharsets.UTF_8);
 
             String minLengthParam = parameters.getOrDefault("minLength", "1");
             String stopOnFirstParam = parameters.getOrDefault("stopOnFirst", "false");
@@ -87,8 +87,8 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
     @Override
     public String handleRequest(Map<String, String> event, Context context) {
         try {
-            String seq1Param = event.get("seq1");
-            String seq2Param = event.get("seq2");
+            String seq1Param = event.getOrDefault("seq1", "seq1:ATGC");
+            String seq2Param = event.getOrDefault("seq2", "seq2:ATGC");
             String minLengthParam = event.getOrDefault("minLength", "1");
             boolean stopOnFirst = Boolean.parseBoolean(event.getOrDefault("stopOnFirst", "false"));
 
@@ -104,13 +104,13 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
      */
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.out.println("Usage: java -cp pt.ulisboa.tecnico.cnv.fractals.FractalsHandler <[name1:]seq_fasta1> <[name2:]seq_fasta2> [minLength] [stopOnFirst]");
+            System.out.println("Usage: java -cp pt.ulisboa.tecnico.cnv.dna.DnaHandler <[name1:]seq_fasta1> <[name2:]seq_fasta2> [minLength] [stopOnFirst]");
             return;
         }
-        String[] seq1 = Dna.parseDnaParam(args[0]);
-        String[] seq2 = Dna.parseDnaParam(args[1]);
+        String[] seq1 = args.length > 0 ? Dna.parseDnaParam(args[0]) : Dna.parseDnaParam("seq1:ATGC");
+        String[] seq2 = args.length > 1 ? Dna.parseDnaParam(args[1]) : Dna.parseDnaParam("seq2:ATGC");
         int minLength = args.length > 2 ? Integer.parseInt(args[2]) : 1;
-        boolean stopOnFirst = args.length > 3 && Boolean.parseBoolean(args[3]);
+        boolean stopOnFirst = args.length > 3 ? Boolean.parseBoolean(args[3]) : false;
 
         String seq1Parsed = Dna.parseFastaContent(seq1[1]);
         String seq2Parsed = Dna.parseFastaContent(seq2[1]);

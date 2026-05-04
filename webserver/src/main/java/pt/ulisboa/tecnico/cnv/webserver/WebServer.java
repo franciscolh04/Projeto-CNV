@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import pt.ulisboa.tecnico.cnv.dna.DnaHandler;
 import pt.ulisboa.tecnico.cnv.fractals.FractalsHandler;
+import pt.ulisboa.tecnico.cnv.grayscott.GrayScottHandler;
 
 public class WebServer {
     public static void main(String[] args) throws Exception {
@@ -14,6 +15,7 @@ public class WebServer {
         server.createContext("/", new RootHandler());
         server.createContext("/fractals", new FractalsHandler());
         server.createContext("/dna", new DnaHandler());
+        server.createContext("/grayscott", new GrayScottHandler());
         server.start();
     }
 }
