@@ -8,6 +8,14 @@
 	<version>1.0.0-SNAPSHOT</version>
 	<packaging>pom</packaging>
 
+	<properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>11</maven.compiler.release>
+        <maven.compiler.plugin.version>3.8.1</maven.compiler.plugin.version>
+        <aws.java.sdk.version>2.42.13</aws.java.sdk.version>
+        <javassist.version>3.29.2-GA</javassist.version>
+    </properties>
+
 	<!-- Modules are subcomponents of the project.
 		The reactor collects all the available modules to build;
 		sorts the projects into the correct build order;
@@ -18,5 +26,17 @@
 		<module>dna</module>
 		<module>grayscott</module>
 	</modules>
+
+	<dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${aws.java.sdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
 </project>
