@@ -79,6 +79,20 @@ public class AutoScaler implements Runnable {
             // Scale down: 3 min grace period passed and work below minimum threshold
             else if (timeSinceLastScale >= COOLDOWN_MS && avgWork < MIN_WORK_THRESHOLD && 
                      totalWorkers > MIN_INSTANCES) {
+
+                boolean isClusterStable = true;
+                for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+                    if (node.getMissedPings() > 0) {
+                        isClusterStable = false;
+                        break;
+                    }
+                }
+
+                if (!isClusterStable) {
+                    LOGGER.info("[AS] Cluster is not stable (some workers missed pings). Skipping scale down.");
+                    return;
+                }
+
                 String workerToRemove = findLeastLoadedWorker();
                 if (workerToRemove != null) {
                     initiateScaleDown(workerToRemove);
@@ -96,7 +110,7 @@ public class AutoScaler implements Runnable {
             if (workerNode != null) {
                 // Move worker to draining state instead of terminating immediately
                 drainingWorkers.put(workerIp, new DrainingNode(workerNode, System.currentTimeMillis()));
-                LOGGER.info("Worker " + workerIp + " moved to draining state");
+                LOGGER.info("[AS] Worker " + workerIp + " moved to draining state");
             }
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error initiating scale down for worker " + workerIp, e);
@@ -131,7 +145,7 @@ public class AutoScaler implements Runnable {
         try {
             drainingWorkers.remove(workerIp);
             launchInstanceManager.terminateInstanceByIp(workerIp);
-            LOGGER.info("Worker " + workerIp + " terminated successfully");
+            LOGGER.info("[AS] Worker " + workerIp + " terminated successfully");
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error terminating worker " + workerIp, e);
         }
@@ -159,7 +173,7 @@ public class AutoScaler implements Runnable {
         try {
             String instanceId = launchInstanceManager.launchInstance();
             if (instanceId == null) {
-                LOGGER.warning("Failed to launch instance");
+                LOGGER.warning("[AS] Failed to launch instance");
             }
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error during scale up", e);
