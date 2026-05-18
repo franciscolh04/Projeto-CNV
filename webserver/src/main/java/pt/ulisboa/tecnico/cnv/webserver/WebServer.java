@@ -26,7 +26,7 @@ public class WebServer {
         }
         System.out.println("[Worker] O meu ID da AWS é: " + myInstanceId);
 
-        // Handshake with the Load Balancer
+        //  TODO: WHY THIS ? REMOVE ? Handshake with the Load Balancer
         if (args.length > 0) {
             System.out.println("[Worker] Trying to register myself to the LB: " + loadBalancerIp);
             
@@ -63,6 +63,7 @@ public class WebServer {
             os.close();
         });
 
+        server.createContext("/ping", new PingHandler());
         server.start();
     }
 }
