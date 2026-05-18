@@ -27,6 +27,11 @@
             <artifactId>aws-lambda-java-core</artifactId>
             <version>1.2.1</version>
         </dependency>
+        <dependency>
+            <groupId>pt.ulisboa.tecnico.cnv</groupId>
+            <artifactId>instrumentation</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
     <build>

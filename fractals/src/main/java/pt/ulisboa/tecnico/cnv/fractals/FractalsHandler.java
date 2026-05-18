@@ -62,6 +62,10 @@ public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, 
 
             String response = handleWorkload(width, height, iterations);
 
+            // Fetch metrics from Javassist agent
+            long cost = pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator.getAndResetCost();
+            he.getResponseHeaders().add("X-Request-Cost", String.valueOf(cost));
+
             he.sendResponseHeaders(200, response.length());
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());

@@ -66,6 +66,10 @@ public class GrayScottHandler implements HttpHandler, RequestHandler<Map<String,
 
             String response = handleWorkload(size, maxIterations, F, K, stopOnExtinction, seedMode);
 
+            // Fetch metrics from Javassist agent
+            long cost = pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator.getAndResetCost();
+            he.getResponseHeaders().add("X-Request-Cost", String.valueOf(cost));
+
             he.sendResponseHeaders(200, response.length());
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());

@@ -1,27 +1,21 @@
-package pt.ulisboa.tecnico.cnv.loadbalancer;
+package pt.ulisboa.tecnico.cnv.loadBalancer;
 
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.IOException;
-import java.util.Map;
 
 public class WorkerRegisterHandler implements HttpHandler {
-    private Map<String, Integer> workers;
-    private Map<String, String> workerIds; 
-    
-    public WorkerRegisterHandler(Map<String, Integer> workers, Map<String, String> workerIds) {
-        this.workers = workers;
-        this.workerIds = workerIds; 
+
+    public WorkerRegisterHandler() {
     }
 
     @Override
     public void handle(HttpExchange t) throws IOException {
         String workerIp = t.getRemoteAddress().getAddress().getHostAddress();
         String query = t.getRequestURI().getQuery();
-        String instanceId = query != null ? query.split("=")[1] : "ID_UNKNOWN";
+        String instanceId = (query != null && query.contains("=")) ? query.split("=")[1] : "ID_UNKNOWN";
 
-        workers.put(workerIp, 0);
-        workerIds.put(workerIp, instanceId); 
+        LoadBalancer.activeWorkers.put(workerIp, new WorkerNode(instanceId, workerIp));
         
         System.out.println("[Handshake] New Worker ready! IP: " + workerIp + " | ID: " + instanceId);
         

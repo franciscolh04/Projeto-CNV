@@ -7,6 +7,7 @@ import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import java.util.logging.Logger;
 import java.util.logging.Level;
+import java.util.Base64;
 
 /**
  * Manages EC2 instance lifecycle - launch and terminate instances.
@@ -39,6 +40,11 @@ public class LaunchInstance {
 
     public String launchInstance() {
         try {
+            // Bash script to run Java with Javassist agent when machine boots
+            String userDataScript = "#!/bin/bash\n" +
+                    "su - ec2-user -c 'cd /home/ec2-user && java -javaagent:instrumentation-1.0.0-SNAPSHOT.jar=pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator:pt.ulisboa.tecnico.cnv:output -cp webserver-1.0.0-SNAPSHOT-jar-with-dependencies.jar pt.ulisboa.tecnico.cnv.webserver.WebServer > worker.log 2>&1 &'\n";
+            String encodedUserData = Base64.getEncoder().encodeToString(userDataScript.getBytes());
+
             RunInstancesRequest request = RunInstancesRequest.builder()
                     .imageId(AMI_ID)
                     .instanceType(INSTANCE_TYPE)
@@ -46,6 +52,7 @@ public class LaunchInstance {
                     .maxCount(1)
                     .keyName(KEY_NAME)
                     .securityGroupIds(SEC_GROUP_ID)
+                    .userData(encodedUserData)
                     .build();
 
             RunInstancesResponse response = ec2Client.runInstances(request);
@@ -56,7 +63,6 @@ public class LaunchInstance {
             
             if (privateIp != null) {
                 System.out.println("Instance ready with IP: " + privateIp);
-                LoadBalancer.activeWorkers.put(privateIp, new WorkerNode(instanceId, privateIp));
                 return instanceId;
             } else {
                 System.out.println("Timeout waiting for instance IP");

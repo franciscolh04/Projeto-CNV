@@ -26,6 +26,7 @@
 		<module>dna</module>
 		<module>grayscott</module>
 		<module>loadBalancer</module>
+        <module>instrumentation</module>
 	</modules>
 
 	<dependencyManagement>

@@ -66,6 +66,10 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
 
             String response = handleWorkload(seq1Param, seq2Param, minLength, stopOnFirst);
 
+            // Fetch metrics from Javassist agent
+            long cost = pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator.getAndResetCost();
+            he.getResponseHeaders().add("X-Request-Cost", String.valueOf(cost));
+
             he.sendResponseHeaders(200, response.getBytes().length);
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());

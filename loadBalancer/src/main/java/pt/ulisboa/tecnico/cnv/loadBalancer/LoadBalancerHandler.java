@@ -107,15 +107,53 @@ public class LoadBalancerHandler implements HttpHandler {
         HttpResponse<String> response = httpClient.send(request, 
                 HttpResponse.BodyHandlers.ofString());
         
+        response.headers().firstValue("X-Request-Cost").ifPresent(costStr -> {
+            try {
+                int realCost = Integer.parseInt(costStr);
+                
+                String cacheKey = path; 
+                if (query != null && !query.isEmpty()) {
+                     cacheKey += "?" + query;
+                }
+                
+                LoadBalancer.metricsModelCache.put(cacheKey, realCost);
+                LOGGER.info("[Metrics] Learned new cost for " + cacheKey + " -> " + realCost + " ops");
+                
+            } catch (NumberFormatException e) {
+                LOGGER.warning("Invalid format for X-Request-Cost header received.");
+            }
+        });
+        
         return response.body();
     }
 
-    // TODO : where we should consult the cache and estimate the work based on what we have seen before.
+    /**
+     * Estimates the work required for a request based on its path and query parameters.
+     * @param exchange The HTTP exchange object.
+     * @return The estimated work.
+     */
     private int estimateWork(HttpExchange exchange) {
-        String operation = exchange.getRequestURI().getPath();
-        Integer unitPrice = LoadBalancer.metricsModelCache.get(operation);
-        // UnitPrice * size 
-        return 1;
+        String path = exchange.getRequestURI().getPath();
+        String query = exchange.getRequestURI().getQuery();
+        
+        String cacheKey = path;
+        if (query != null && !query.isEmpty()) {
+             cacheKey += "?" + query;
+        }
+
+        // Try to get learned cost from cache based on path and query parameters
+        Integer learnedCost = LoadBalancer.metricsModelCache.get(cacheKey);
+        
+        if (learnedCost != null) {
+            // If we have seen this request before, use the learned cost for better load balancing decisions.
+            LOGGER.info("[Estimation] Found exact match for " + cacheKey + ". Estimated cost: " + learnedCost);
+            return learnedCost;
+        } else {
+            // If it's a new request we haven't seen, use a default safe estimate.
+            // We choose 1000 instead of 1 to avoid overloading machines with unknown large requests
+            LOGGER.info("[Estimation] Unseen request " + cacheKey + ". Using default safe cost.");
+            return 1000; 
+        }
     }
 
     /**
