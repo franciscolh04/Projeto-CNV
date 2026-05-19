@@ -41,6 +41,13 @@ ssh -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ec2-user@$MASTER_PUB
 echo "==================================================="
 echo " Step 5: Send the Executable and AWS Credentials"
 echo "==================================================="
+# Ensure that env vars are set
+CONFIG_FILE="config.sh"
+sed -i "/export CNV_AMI_ID=/d" $CONFIG_FILE
+sed -i "/export CNV_SEC_GROUP_ID=/d" $CONFIG_FILE
+echo "export CNV_AMI_ID=\"$(cat image.id)\"" >> $CONFIG_FILE
+echo "export CNV_SEC_GROUP_ID=\"$AWS_SECURITY_GROUP\"" >> $CONFIG_FILE
+
 # 1. Send the Java application
 scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ../loadbalancer/target/loadbalancer-1.0.0-SNAPSHOT-jar-with-dependencies.jar ec2-user@$MASTER_PUBLIC_DNS:/home/ec2-user/
 # 2. Send config.sh so the Auto Scaler has permissions to act

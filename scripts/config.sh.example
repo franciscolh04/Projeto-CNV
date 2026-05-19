@@ -10,3 +10,4 @@ export AWS_SECRET_ACCESS_KEY=<insert here your aws secret access key>
 export AWS_EC2_SSH_KEYPAR_PATH=<path to aws ssh keypair>
 export AWS_SECURITY_GROUP=<name of your security group>
 export AWS_KEYPAIR_NAME=<name of your aws keypair>
+

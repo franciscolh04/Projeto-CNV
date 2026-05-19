@@ -17,14 +17,12 @@ public class LaunchInstance {
 
     // TODO: ADD THIS TO THE CONFIGURATION FILE (SCRIPTS)
     private static final Region AWS_REGION = Region.US_EAST_1;
-    private static final String AMI_ID = System.getenv("CNV_AMI_ID") != null ? 
-            System.getenv("CNV_AMI_ID") : "ami-0dc030e6b9f2e1f2c";
+    private static final String AMI_ID = System.getenv("CNV_AMI_ID");
     private static final String INSTANCE_TYPE = System.getenv("CNV_INSTANCE_TYPE") != null ? 
             System.getenv("CNV_INSTANCE_TYPE") : "t3.micro";
     private static final String KEY_NAME = System.getenv("CNV_KEY_NAME") != null ? 
             System.getenv("CNV_KEY_NAME") : "mykeypair";
-    private static final String SEC_GROUP_ID = System.getenv("CNV_SEC_GROUP_ID") != null ? 
-            System.getenv("CNV_SEC_GROUP_ID") : "sg-01303352a35152e9d";
+    private static final String SEC_GROUP_ID = System.getenv("CNV_SEC_GROUP_ID");
     
     private static final long WAIT_TIME_FOR_READY = 1000L * 60 * 5;
     private static final long CHECK_INTERVAL = 1000L * 5;
@@ -32,6 +30,12 @@ public class LaunchInstance {
     private final Ec2Client ec2Client;
 
     public LaunchInstance() {
+
+        if (AMI_ID == null || SEC_GROUP_ID == null) {
+            LOGGER.severe("[LI] Environment variables CNV_AMI_ID and CNV_SEC_GROUP_ID must be set");
+            throw new IllegalStateException("[LI] Missing required environment variables");
+        }
+
         this.ec2Client = Ec2Client.builder()
                 .region(AWS_REGION)
                 .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
@@ -63,6 +67,7 @@ public class LaunchInstance {
             
             if (privateIp != null) {
                 System.out.println("Instance ready with IP: " + privateIp);
+                LoadBalancer.activeWorkers.put(privateIp, new WorkerNode(instanceId, privateIp));
                 return instanceId;
             } else {
                 System.out.println("Timeout waiting for instance IP");

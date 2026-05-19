@@ -44,7 +44,6 @@ public class LoadBalancer {
         server.createContext("/fractals", handler);
         server.createContext("/dna", handler);
         server.createContext("/grayscott", handler);
-        server.createContext("/register", new WorkerRegisterHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
     }
