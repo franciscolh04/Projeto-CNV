@@ -3,7 +3,7 @@
 source config.sh
 
 # Step 1: launch a vm instance.
-$DIR/launch-vm.sh
+$DIR/launch-vm.sh instance
 
 # Step 2: build web server and javassist
 cd "$DIR/.."

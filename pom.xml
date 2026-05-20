@@ -21,12 +21,12 @@
 		sorts the projects into the correct build order;
 		builds the selected projects in order. -->
 	<modules>
+        <module>instrumentation</module>
 		<module>webserver</module>
 		<module>fractals</module>
 		<module>dna</module>
 		<module>grayscott</module>
 		<module>loadBalancer</module>
-        <module>instrumentation</module>
 	</modules>
 
 	<dependencyManagement>

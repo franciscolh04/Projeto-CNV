@@ -14,9 +14,9 @@ echo "==================================================="
 echo " Step 2: Launch the EC2 instance (The Permanent Master)"
 echo "==================================================="
 # We use the base script from the labs to launch the machine
-./launch-vm.sh
-MASTER_PUBLIC_DNS=$(cat instance.dns)
-MASTER_INSTANCE_ID=$(cat instance.id)
+./launch-vm.sh masterLB
+MASTER_PUBLIC_DNS=$(cat masterLB.dns)
+MASTER_INSTANCE_ID=$(cat masterLB.id)
 
 echo "Waiting 40 seconds for the Master to start and open SSH..."
 sleep 40
@@ -33,13 +33,22 @@ MASTER_PRIVATE_IP=$(aws ec2 describe-instances \
 echo "Public IP (For your Browser): $MASTER_PUBLIC_DNS"
 echo "Private IP (For the internal network): $MASTER_PRIVATE_IP"
 
+CONFIG_FILE="config.sh"
+sed -i "/export MASTER_PRIVATE_IP=/d" $CONFIG_FILE
+echo "export MASTER_PRIVATE_IP=\"$MASTER_PRIVATE_IP\"" >> $CONFIG_FILE
+
 echo "==================================================="
-echo " Step 4: Install Java 11 on the Master"
+echo " Step 4: Create The AMI"
+echo "==================================================="
+./create-image.sh
+
+echo "==================================================="
+echo " Step 5: Install Java 11 on the Master"
 echo "==================================================="
 ssh -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ec2-user@$MASTER_PUBLIC_DNS "sudo yum update -y; sudo yum install java-11-amazon-corretto-devel.x86_64 -y;"
 
 echo "==================================================="
-echo " Step 5: Send the Executable and AWS Credentials"
+echo " Step 6: Send the Executable and AWS Credentials"
 echo "==================================================="
 # Ensure that env vars are set
 CONFIG_FILE="config.sh"
@@ -54,7 +63,7 @@ scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ../loadbalancer/targ
 scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH config.sh ec2-user@$MASTER_PUBLIC_DNS:/home/ec2-user/
 
 echo "==================================================="
-echo " Step 6: Start the System in the Background"
+echo " Step 7: Start the System in the Background"
 echo "==================================================="
 # The 'nohup' command ensures that the server continues to run even when you close your terminal.
 # The output is saved in the master.log file
@@ -62,7 +71,7 @@ echo "==================================================="
 ssh -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ec2-user@$MASTER_PUBLIC_DNS "source config.sh && nohup java -cp loadbalancer-1.0.0-SNAPSHOT-jar-with-dependencies.jar pt.ulisboa.tecnico.cnv.loadbalancer.LoadBalancer $MASTER_PRIVATE_IP > master.log 2>&1 &"
 
 echo "==================================================="
-echo " SUCCESS! Your Load Balancer and Auto Scaler are online!"
+echo " SUCCESS! Your Load Balancer and Auto Scaler are online! (AMI also created)"
 echo " "
 echo " Test in your browser:"
 echo " http://$MASTER_PUBLIC_DNS:8000/fractals?w=400&h=400&n=100"
