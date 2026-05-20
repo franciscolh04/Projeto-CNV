@@ -13,7 +13,7 @@ INSTANCE_ID=$(/usr/bin/curl \
 
 # Launch the webserver with Javassist instrumentation agent
 exec /usr/bin/java \
-    -javaagent:/home/ec2-user/instrumentation-1.0.0-SNAPSHOT.jar=pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator:pt.ulisboa.tecnico.cnv:output \
+    -javaagent:/home/ec2-user/instrumentation-1.0.0-SNAPSHOT.jar=ComplexityEstimator:pt.ulisboa.tecnico.cnv:output \
     -cp /home/ec2-user/webserver-1.0.0-SNAPSHOT-jar-with-dependencies.jar \
     pt.ulisboa.tecnico.cnv.webserver.WebServer \
     "$MASTER_PRIVATE_IP" "$INSTANCE_ID" \

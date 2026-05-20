@@ -40,6 +40,8 @@ public class WebServer {
             URL registerUrl = new URL("http://" + loadBalancerIp + ":8000/register?id=" + myInstanceId);
             HttpURLConnection registerConn = (HttpURLConnection) registerUrl.openConnection();
             registerConn.setRequestMethod("GET");
+            registerConn.setConnectTimeout(3000); // 3 seconds timeout
+            registerConn.setReadTimeout(3000);    // 3 seconds timeout
             
             int responseCode = registerConn.getResponseCode(); 
             if (responseCode == 200) {
