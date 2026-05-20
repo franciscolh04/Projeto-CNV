@@ -8,6 +8,8 @@ import software.amazon.awssdk.services.ec2.model.*;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 import java.util.Base64;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 /**
  * Manages EC2 instance lifecycle - launch and terminate instances.
@@ -23,6 +25,8 @@ public class LaunchInstance {
     private static final String KEY_NAME = System.getenv("CNV_KEY_NAME") != null ? 
             System.getenv("CNV_KEY_NAME") : "mykeypair";
     private static final String SEC_GROUP_ID = System.getenv("CNV_SEC_GROUP_ID");
+    private static final String USERDATA_SCRIPT_PATH = System.getenv("CNV_USERDATA_SCRIPT_PATH") != null ?
+            System.getenv("CNV_USERDATA_SCRIPT_PATH") : "./scripts/webserver-userdata.sh";
     
     private static final long WAIT_TIME_FOR_READY = 1000L * 60 * 5;
     private static final long CHECK_INTERVAL = 1000L * 5;
@@ -42,12 +46,18 @@ public class LaunchInstance {
                 .build();
     }
 
-    public String launchInstance() {
+    public String launchInstance(String masterIP) {
         try {
-            // Bash script to run Java with Javassist agent when machine boots
-            // String userDataScript = "#!/bin/bash\n" +
-            //         "su - ec2-user -c 'cd /home/ec2-user && java -javaagent:instrumentation-1.0.0-SNAPSHOT.jar=pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator:pt.ulisboa.tecnico.cnv:output -cp webserver-1.0.0-SNAPSHOT-jar-with-dependencies.jar pt.ulisboa.tecnico.cnv.webserver.WebServer > worker.log 2>&1 &'\n";
-            // String encodedUserData = Base64.getEncoder().encodeToString(userDataScript.getBytes());
+            // Read and prepare userdata script with master IP injection
+            String userDataScript = prepareUserDataScript(masterIP);
+            
+            if (userDataScript == null) {
+                LOGGER.severe("[LI] Failed to prepare userdata script");
+                return null;
+            }
+            
+            // Encode userdata in Base64
+            String encodedUserData = Base64.getEncoder().encodeToString(userDataScript.getBytes());
 
             RunInstancesRequest request = RunInstancesRequest.builder()
                     .imageId(AMI_ID)
@@ -56,8 +66,8 @@ public class LaunchInstance {
                     .maxCount(1)
                     .keyName(KEY_NAME)
                     .securityGroupIds(SEC_GROUP_ID)
+                    .userData(encodedUserData)
                     .build();
-                    //.userData(encodedUserData)
 
             RunInstancesResponse response = ec2Client.runInstances(request);
             String instanceId = response.instances().get(0).instanceId();
@@ -80,6 +90,26 @@ public class LaunchInstance {
             return null;
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Unexpected error", e);
+            return null;
+        }
+    }
+
+    /**
+     * Reads the webserver-userdata.sh script and injects the master IP
+     */
+    private String prepareUserDataScript(String masterIP) {
+        try {
+            // Read the userdata script
+            String scriptContent = new String(Files.readAllBytes(Paths.get(USERDATA_SCRIPT_PATH)));
+            
+            // Replace placeholder with actual master IP
+            scriptContent = scriptContent.replace("$MASTER_PRIVATE_IP", masterIP);
+            
+            LOGGER.info("[LI] Userdata script prepared with master IP: " + masterIP);
+            return scriptContent;
+            
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "Error reading userdata script from " + USERDATA_SCRIPT_PATH, e);
             return null;
         }
     }

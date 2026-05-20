@@ -1,6 +1,9 @@
 package pt.ulisboa.tecnico.cnv.loadBalancer;
 
 import java.util.logging.Logger;
+
+import software.amazon.awssdk.services.ec2.endpoints.internal.Value.Str;
+
 import java.util.logging.Level;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
@@ -19,11 +22,13 @@ public class AutoScaler implements Runnable {
     private static final long DRAIN_TIMEOUT_MS = 60000; // 60 seconds timeout for draining
 
     private final LaunchInstance launchInstanceManager;
+    private final String masterIp;
     private long lastScaleOperation = 0;
     private final ConcurrentHashMap<String, DrainingNode> drainingWorkers = new ConcurrentHashMap<>();
 
-    public AutoScaler() {
+    public AutoScaler(String masterIP) {
         this.launchInstanceManager = new LaunchInstance();
+        this.masterIp = masterIP;
     }
 
     /**
@@ -171,7 +176,7 @@ public class AutoScaler implements Runnable {
 
     private void scaleUp() {
         try {
-            String instanceId = launchInstanceManager.launchInstance();
+            String instanceId = launchInstanceManager.launchInstance(masterIp);
             if (instanceId == null) {
                 LOGGER.warning("[AS] Failed to launch instance");
             }
