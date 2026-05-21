@@ -14,8 +14,8 @@ import java.util.ArrayList;
  */
 public class AutoScaler implements Runnable {
     private static final Logger LOGGER = Logger.getLogger(AutoScaler.class.getName());
-    private static final double MAX_WORK_THRESHOLD = 10.0;
-    private static final double MIN_WORK_THRESHOLD = 5.0;
+    private static final double MAX_WORK_THRESHOLD = 150000.0; // ~150B instructions
+    private static final double MIN_WORK_THRESHOLD = 20000.0; // ~20B instructions
     private static final int MIN_INSTANCES = 1;
     private static final int MAX_INSTANCES = 10;
     private static final long COOLDOWN_MS = 120000;

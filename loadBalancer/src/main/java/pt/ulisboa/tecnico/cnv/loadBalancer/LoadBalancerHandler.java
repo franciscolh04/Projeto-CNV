@@ -109,7 +109,9 @@ public class LoadBalancerHandler implements HttpHandler {
         
         response.headers().firstValue("X-Request-Cost").ifPresent(costStr -> {
             try {
-                int realCost = Integer.parseInt(costStr);
+                // Divide raw cost by 1 million to convert to "units" for our model, ensuring at least 1 unit, preventing integer overflow, and store in cache
+                long rawCost = Long.parseLong(costStr);
+                int realCost = (int) Math.max(1L, rawCost / 1_000_000L);
                 
                 String cacheKey = path; 
                 if (query != null && !query.isEmpty()) {
@@ -117,7 +119,7 @@ public class LoadBalancerHandler implements HttpHandler {
                 }
                 
                 LoadBalancer.metricsModelCache.put(cacheKey, realCost);
-                LOGGER.info("[Metrics] Learned new cost for " + cacheKey + " -> " + realCost + " ops");
+                LOGGER.info("[Metrics] Learned new cost for " + cacheKey + " -> " + rawCost + " ops -> " + realCost + " units");
                 
             } catch (NumberFormatException e) {
                 LOGGER.warning("Invalid format for X-Request-Cost header received.");
@@ -141,19 +143,51 @@ public class LoadBalancerHandler implements HttpHandler {
              cacheKey += "?" + query;
         }
 
-        // Try to get learned cost from cache based on path and query parameters
         Integer learnedCost = LoadBalancer.metricsModelCache.get(cacheKey);
-        
         if (learnedCost != null) {
-            // If we have seen this request before, use the learned cost for better load balancing decisions.
-            LOGGER.info("[Estimation] Found exact match for " + cacheKey + ". Estimated cost: " + learnedCost);
+            LOGGER.info("[Estimation] Cache hit for " + cacheKey + ". Cost: " + learnedCost);
             return learnedCost;
-        } else {
-            // If it's a new request we haven't seen, use a default safe estimate.
-            // We choose 1000 instead of 1 to avoid overloading machines with unknown large requests
-            LOGGER.info("[Estimation] Unseen request " + cacheKey + ". Using default safe cost.");
-            return 1000; 
         }
+
+        // --- HEURISTIC MODEL ---
+        try {
+            java.util.Map<String, String> params = new java.util.HashMap<>();
+            if (query != null) {
+                for (String param : query.split("&")) {
+                    String[] entry = param.split("=");
+                    if (entry.length > 1) params.put(entry[0], entry[1]);
+                }
+            }
+
+            if (path.contains("fractal")) {
+                long w = Long.parseLong(params.getOrDefault("w", "1"));
+                long h = Long.parseLong(params.getOrDefault("h", "1"));
+                long rawCost = w * h * 1550L;
+                int cost = (int) Math.max(1L, rawCost / 1_000_000L);
+                LOGGER.info("[Estimation/Heuristic] FRACTAL " + cacheKey + " -> Raw: " + rawCost + " Units: " + cost);
+                return cost;
+            } else if (path.contains("grayscott")) {
+                long s = Long.parseLong(params.getOrDefault("size", "1"));
+                long n = Long.parseLong(params.getOrDefault("maxIterations", "1"));
+                long rawCost = s * s * n * 273L;
+                int cost = (int) Math.max(1L, rawCost / 1_000_000L);
+                LOGGER.info("[Estimation/Heuristic] GRAYSCOTT " + cacheKey + " -> Raw: " + rawCost + " Units: " + cost);
+                return cost;
+            } else if (path.contains("dna")) {
+                // seq lengths
+                String s1 = params.getOrDefault("seq1", "");
+                String s2 = params.getOrDefault("seq2", "");
+                long rawCost = (long) s1.length() * (long) s2.length() * 16L;
+                int cost = (int) Math.max(1L, rawCost / 1_000_000L);
+                LOGGER.info("[Estimation/Heuristic] DNA " + cacheKey + " -> Raw: " + rawCost + " Units: " + cost);
+                return cost;
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "[Estimation] Error calculating heuristic", e);
+        }
+
+        LOGGER.info("[Estimation] Unknown request " + cacheKey + ". Using default.");
+        return 10; // 10 units = 10,000,000 instructions default
     }
 
     /**
