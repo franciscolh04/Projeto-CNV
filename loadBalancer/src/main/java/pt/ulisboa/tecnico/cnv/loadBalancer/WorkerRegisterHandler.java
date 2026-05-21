@@ -1,4 +1,4 @@
-package pt.ulisboa.tecnico.cnv.loadBalancer;
+package pt.ulisboa.tecnico.cnv.loadbalancer;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -12,7 +12,7 @@ public class WorkerRegisterHandler implements HttpHandler {
         String query = t.getRequestURI().getQuery();
         String instanceId = query != null ? query.split("=")[1] : "ID_UNKNOWN";
 
-        LoadBalancer.activeWorkers.put(workerIp, new WorkerNode(workerIp, instanceId));
+        LoadBalancer.activeWorkers.put(workerIp, new WorkerNode(instanceId, workerIp));
         
         System.out.println("[Handshake] New Worker ready! IP: " + workerIp + " | ID: " + instanceId);
         

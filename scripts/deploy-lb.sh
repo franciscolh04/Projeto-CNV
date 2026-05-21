@@ -62,8 +62,7 @@ echo " Step 6: Start the System in the Background"
 echo "==================================================="
 # The 'nohup' command ensures that the server continues to run even when you close your terminal.
 # The output is saved in the master.log file
-# Do control-c when The echo Step 6 is printed in terminal
-ssh -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ec2-user@$MASTER_PUBLIC_DNS "source config.sh && nohup java -cp loadbalancer-1.0.0-SNAPSHOT-jar-with-dependencies.jar pt.ulisboa.tecnico.cnv.loadbalancer.LoadBalancer $MASTER_PRIVATE_IP > master.log 2>&1 &"
+ssh -f -n -o StrictHostKeyChecking=no -i "$AWS_EC2_SSH_KEYPAR_PATH" ec2-user@"$MASTER_PUBLIC_DNS" "source config.sh && nohup java -cp loadbalancer-1.0.0-SNAPSHOT-jar-with-dependencies.jar pt.ulisboa.tecnico.cnv.loadbalancer.LoadBalancer $MASTER_PRIVATE_IP > master.log 2>&1 &"
 
 echo "==================================================="
 echo " SUCCESS! Your Load Balancer and Auto Scaler are online!"

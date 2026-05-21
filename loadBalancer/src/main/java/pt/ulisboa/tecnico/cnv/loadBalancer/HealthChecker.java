@@ -1,4 +1,4 @@
-package pt.ulisboa.tecnico.cnv.loadBalancer;
+package pt.ulisboa.tecnico.cnv.loadbalancer;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -48,6 +48,7 @@ public class HealthChecker implements Runnable {
             }
             
             strikes++;
+            node.setMissedPings(strikes);
             System.out.println("[HealthChecker] Worker " + node.getIp() + " missed ping (" + strikes + "/" + MAX_STRIKES + ")");
 
             if (strikes >= MAX_STRIKES) {

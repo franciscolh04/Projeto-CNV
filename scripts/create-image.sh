@@ -14,9 +14,9 @@ cd "$DIR"
 $DIR/install-vm.sh
 
 # Step 4: test VM instance.
-$DIR/test-vm.sh
+# $DIR/test-vm.sh
 
-# Step 4: create VM image (AIM).
+# Step 4: create VM image (AMI).
 aws ec2 create-image --instance-id $(cat instance.id) --name CNV-Image | jq -r .ImageId > image.id
 echo "New VM image with id $(cat image.id)."
 

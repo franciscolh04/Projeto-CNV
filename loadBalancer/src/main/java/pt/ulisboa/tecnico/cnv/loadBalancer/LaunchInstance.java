@@ -1,4 +1,4 @@
-package pt.ulisboa.tecnico.cnv.loadBalancer;
+package pt.ulisboa.tecnico.cnv.loadbalancer;
 
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;

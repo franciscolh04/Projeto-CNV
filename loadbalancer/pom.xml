@@ -7,7 +7,7 @@
     <modelVersion>4.0.0</modelVersion>
     
     <groupId>pt.ulisboa.tecnico.cnv</groupId>
-    <artifactId>loadBalancer</artifactId>
+    <artifactId>loadbalancer</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <name>Load Balancer</name>
     <description>Load Balancer for distributing requests between EC2 instances</description>
@@ -77,7 +77,7 @@
                     </descriptorRefs>
                     <archive>
                         <manifest>
-                            <mainClass>pt.ulisboa.tecnico.cnv.loadBalancer.LoadBalancer</mainClass>
+                            <mainClass>pt.ulisboa.tecnico.cnv.loadbalancer.LoadBalancer</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

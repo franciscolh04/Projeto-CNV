@@ -1,4 +1,4 @@
-package pt.ulisboa.tecnico.cnv.loadBalancer;
+package pt.ulisboa.tecnico.cnv.loadbalancer;
 
 import com.sun.net.httpserver.HttpServer;
 

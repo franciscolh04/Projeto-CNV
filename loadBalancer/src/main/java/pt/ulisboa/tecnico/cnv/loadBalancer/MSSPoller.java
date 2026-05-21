@@ -1,4 +1,4 @@
-package pt.ulisboa.tecnico.cnv.loadBalancer;
+package pt.ulisboa.tecnico.cnv.loadbalancer;
 
 import java.util.logging.Logger;
 import java.util.logging.Level;
