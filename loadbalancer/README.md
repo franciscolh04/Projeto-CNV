@@ -12,7 +12,7 @@ HTTP load balancer for distributing requests across EC2 worker instances with au
 Start the load balancer:
 
 ```
-java -jar target/loadBalancer-1.0.0-SNAPSHOT-jar-with-dependencies.jar
+java -jar target/loadbalancer-1.0.0-SNAPSHOT-jar-with-dependencies.jar
 ```
 
 The server listens on port 8000 and accepts requests to:

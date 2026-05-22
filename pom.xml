@@ -26,7 +26,7 @@
 		<module>fractals</module>
 		<module>dna</module>
 		<module>grayscott</module>
-		<module>loadBalancer</module>
+		<module>loadbalancer</module>
 	</modules>
 
 	<dependencyManagement>
