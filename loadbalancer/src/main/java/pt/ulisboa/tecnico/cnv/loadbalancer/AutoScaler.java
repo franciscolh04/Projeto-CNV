@@ -61,9 +61,14 @@ public class AutoScaler implements Runnable {
             cleanupDrainingWorkers();
 
             int totalWorkers = LoadBalancer.activeWorkers.size();
+            long timeSinceLastScale = System.currentTimeMillis() - lastScaleOperation;
+
             if (totalWorkers == 0){
-                scaleUp();
-                lastScaleOperation = System.currentTimeMillis();
+                // Scales out immediately if cooldown has passed and there are no active workers
+                if (lastScaleOperation == 0 || timeSinceLastScale > COOLDOWN_MS) {
+                    scaleUp();
+                    lastScaleOperation = System.currentTimeMillis();
+                }
                 return;
             };
 
@@ -71,8 +76,6 @@ public class AutoScaler implements Runnable {
             for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
                 totalWork += node.getWork().get();
             }
-            
-            long timeSinceLastScale = System.currentTimeMillis() - lastScaleOperation;
             
             double avgWork = (double) totalWork / totalWorkers;
 
