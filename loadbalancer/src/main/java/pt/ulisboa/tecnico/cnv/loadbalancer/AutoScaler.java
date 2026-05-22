@@ -66,7 +66,7 @@ public class AutoScaler implements Runnable {
             if (totalWorkers == 0){
                 // Scales out immediately if cooldown has passed and there are no active workers
                 if (lastScaleOperation == 0 || timeSinceLastScale > COOLDOWN_MS) {
-                    scaleUp();
+                    scaleOut();
                     lastScaleOperation = System.currentTimeMillis();
                 }
                 return;
@@ -79,12 +79,12 @@ public class AutoScaler implements Runnable {
             
             double avgWork = (double) totalWork / totalWorkers;
 
-            // Scale up: average work above threshold, under max instances, and cooldown passed
+            // Scale out: average work above threshold, under max instances, and cooldown passed
             if (avgWork > MAX_WORK_THRESHOLD && totalWorkers < MAX_INSTANCES && timeSinceLastScale > COOLDOWN_MS) {
-                scaleUp();
+                scaleOut();
                 lastScaleOperation = System.currentTimeMillis();
             } 
-            // Scale down: 3 min grace period passed and work below minimum threshold
+            // Scale in: 3 min grace period passed and work below minimum threshold
             else if (timeSinceLastScale >= COOLDOWN_MS && avgWork < MIN_WORK_THRESHOLD && 
                      totalWorkers > MIN_INSTANCES) {
 
@@ -97,13 +97,13 @@ public class AutoScaler implements Runnable {
                 }
 
                 if (!isClusterStable) {
-                    LOGGER.info("[AS] Cluster is not stable (some workers missed pings). Skipping scale down.");
+                    LOGGER.info("[AS] Cluster is not stable (some workers missed pings). Skipping scale in.");
                     return;
                 }
 
                 String workerToRemove = findLeastLoadedWorker();
                 if (workerToRemove != null) {
-                    initiateScaleDown(workerToRemove);
+                    initiateScaleIn(workerToRemove);
                     lastScaleOperation = System.currentTimeMillis();
                 }
             }
@@ -112,7 +112,7 @@ public class AutoScaler implements Runnable {
         }
     }
 
-    private void initiateScaleDown(String workerIp) {
+    private void initiateScaleIn(String workerIp) {
         try {
             WorkerNode workerNode = LoadBalancer.activeWorkers.remove(workerIp);
             if (workerNode != null) {
@@ -121,7 +121,7 @@ public class AutoScaler implements Runnable {
                 LOGGER.info("[AS] Worker " + workerIp + " moved to draining state");
             }
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error initiating scale down for worker " + workerIp, e);
+            LOGGER.log(Level.SEVERE, "Error initiating scale in for worker " + workerIp, e);
         }
     }
 
@@ -177,14 +177,14 @@ public class AutoScaler implements Runnable {
         return leastLoaded;
     }
 
-    private void scaleUp() {
+    private void scaleOut() {
         try {
             String instanceId = launchInstanceManager.launchInstance(masterIp);
             if (instanceId == null) {
                 LOGGER.warning("[AS] Failed to launch instance");
             }
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error during scale up", e);
+            LOGGER.log(Level.SEVERE, "Error during scale out", e);
         }
     }
 }
