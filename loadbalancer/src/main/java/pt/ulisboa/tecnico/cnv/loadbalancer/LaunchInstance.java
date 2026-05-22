@@ -17,7 +17,6 @@ import java.nio.file.Paths;
 public class LaunchInstance {
     private static final Logger LOGGER = Logger.getLogger(LaunchInstance.class.getName());
 
-    // TODO: ADD THIS TO THE CONFIGURATION FILE (SCRIPTS)
     private static final Region AWS_REGION = Region.US_EAST_1;
     private static final String AMI_ID = System.getenv("CNV_AMI_ID");
     private static final String INSTANCE_TYPE = System.getenv("CNV_INSTANCE_TYPE") != null ? 
@@ -128,7 +127,7 @@ public class LaunchInstance {
                 if (!response.reservations().isEmpty()) {
                     Instance instance = response.reservations().get(0).instances().get(0);
                     
-                    if (instance.state().name().equals("running") && 
+                    if (instance.state().name() == InstanceStateName.RUNNING && 
                         instance.privateIpAddress() != null && 
                         !instance.privateIpAddress().isEmpty()) {
                         return instance.privateIpAddress();

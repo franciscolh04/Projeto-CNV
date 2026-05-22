@@ -21,7 +21,6 @@ public class LoadBalancer {
     
     public static final ConcurrentHashMap<String, WorkerNode> activeWorkers = new ConcurrentHashMap<>();
 
-    // TODO: Implementar modelo de previsão de custo e desempenho ( Operation -> cost estimation )
     public static final ConcurrentHashMap<String, Integer> metricsModelCache = new ConcurrentHashMap<>();
 
     private static final int LB_PORT = 8000;

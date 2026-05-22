@@ -2,3 +2,7 @@
 **/target/
 mykeypair.pem
 config.sh
+output/
+.DS_Store
+*.id
+*.dns

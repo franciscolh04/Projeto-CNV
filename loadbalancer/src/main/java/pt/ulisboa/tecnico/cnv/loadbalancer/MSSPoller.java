@@ -12,7 +12,7 @@ public class MSSPoller implements Runnable {
     @Override
     public void run() {
         // TODO:
-        // 1. Ler os últimos X registos das operações todas e mapear as suas caracteristicas 
+        // Read the last X records of all operations and map their characteristics 
         /*
         fractals: generates a fractal image, based on image width, height, and number of iterations of the Julia
             function.
@@ -20,13 +20,13 @@ public class MSSPoller implements Runnable {
             substance feed and kill rates, stopping condition on extinction, and seed mode (original distribution).
         dna: a DNA Genome Matcher highlighting DNA matches, based on two FASTA sequences, minimum
             match length, and stopping condition on the first match. */
-        // Para cada registo, temos os parâmetros que foram usados e o custo real medido pelo Javassist (instruction_count).
+        // For each record, we have the parameters that were used and the actual cost measured by Javassist (instruction_count).
 
-        // o custo previsto pode ser uma atribuição a cada pixel (fractals), a cada iteração (grayscott) ou a cada comparação (dna).
-        // o javassist dá-nos o custo total, mas precisamos de o dividir pelo número de unidades de trabalho (pixels, iterações, comparações) para termos um custo por unidade de trabalho.
-        // Depois, podemos tirar uma média do custo por unidade de trabalho para cada tipo de operação (fractals, grayscott, dna) e usar isso como a nossa previsão para o próximo pedido.
+        // the predicted cost can be an assignment to each pixel (fractals), to each iteration (grayscott) or to each comparison (dna).
+        // Javassist gives us the total cost, but we need to divide it by the number of work units (pixels, iterations, comparisons) to have a cost per work unit.
+        // Then, we can take an average of the cost per work unit for each type of operation (fractals, grayscott, dna) and use that as our prediction for the next request.
 
-        // 3. Atualizar o modelo na cache (Thread-Safe)
+        // 3. Update the model in the cache (Thread-Safe)
         LoadBalancer.metricsModelCache.put("operation", 0);
     }
 
