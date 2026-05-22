@@ -9,6 +9,29 @@ This project contains the following sub-projects:
 
 Refer to the `README.md` files of the sub-projects to get more details about each specific sub-project.
 
+### System Architecture and Cloud Configurations (Checkpoint)
+
+Instead of relying solely on standard AWS-managed components (like AWS ELB and Auto Scaling Groups), we have migrated to a fully programmatic Java-based ecosystem (`LoadBalancer.java`, `AutoScaler.java`). This allows for dynamic, metrics-based scaling using JVM instruction counts.
+
+#### 1. Instrumentation and Metrics Extraction
+We utilize a custom Javassist agent (`ComplexityEstimator`) operating at the bytecode level, counting the number of executed JVM instructions per request. To support concurrent processing without metric corruption, stats are isolated using `ThreadLocal`. Upon completion, the count is appended to the HTTP response header `X-Request-Cost`. To prevent integer overflow, **1 Cost Unit = 1,000,000 executed JVM instructions**.
+
+#### 2. Load Balancer configurations (Custom ELB Alternative)
+Our custom Java Load Balancer intercepts requests and dynamically distributes them based on the estimated instruction cost of the request.
+* **Routing Algorithm (Spreading Policy):** Routes the incoming request to the worker instance with the lowest current accumulated workload (`currentWork`).
+* **Cost Estimation:** Uses a Cache (`metricsModelCache`) for known workloads, falling back to static math heuristics ($O(w \cdot h)$ for Fractals, $O(N^2)$ for DNA, $O(s^2 \cdot i)$ for Gray-Scott) if the request is unseen.
+
+#### 3. Auto Scaler configurations (Custom ASG Alternative)
+Our Java Auto Scaler runs every 15 seconds to evaluate the cluster's average work load and triggers AWS EC2 APIs accordingly. 
+* **Scale-Out Threshold:** Average load > 150,000 metric units (~150 Billion JVM instructions). Triggers a new EC2 instance launch.
+* **Scale-In Threshold:** Average load < 20,000 metric units (~20 Billion JVM instructions).
+* **Graceful Draining & Termination:** Identifies the idle worker, drains its queues, and terminates it via `terminateInstanceByIp` AWS API.
+* **Cooldown / Drain Timeout:** 120 seconds between scaling actions to prevent oscillating instantiations.
+
+*(Note: Future DynamoDB/MSS integration has already been conceptually designed and prototyped via `MSSPoller.java`, which will replace the static heuristics with linear regression models over historical data).*
+
+---
+
 ### How to build everything
 
 1. Make sure your `JAVA_HOME` environment variable is set to Java 11+ distribution
@@ -63,45 +86,19 @@ With the Web Server running (in another terminal tab), you can trigger the workl
   ```
 
 ### How to deploy the Load Balancer
-1. Make sure to correctly set the `config.sh` file with your AWS credentials and configuration, an `config.sh.example` file is provided as a template.
-2. Run `./build-worker-ami.sh` to create the AMI for the worker instances.
-3. Run `./deploy-lb.sh` to deploy the Load Balancer. This script will also start the Load Balancer server and every log will be available in `master.log` on the instance.
 
-Note: The Load Balancer will automatically bring up an 2 worker instance, but it will scale up and down based on the load, that is currently computed based on simultaneously requests load. You can check the logs to see when new workers are launched or terminated.
-Note: The Load Balancer is configured to use a maximum load of 3 requests per worker, and a cooldown period of 2 minutes between scaling actions. You can adjust these parameters in the `LoadBalancer.java` file if needed.
-Note: The Load Balancer performs health checks on the workers every 30 seconds, if a worker fails to respond to the health check, it will be removed from the pool and terminated.
-Note: The Load Balancer uses a dynamic Least Connections / Least Load strategy. Instead of sequentially assigning requests (round-robin), it continuously monitors the current active load of each worker and always routes the incoming request to the worker with the lowest current load, ensuring optimal resource distribution.
-Note: The Load Balancer estimates the load of each request as 1 unit, and it decreases the load by 1 unit when the request is completed. This is a simple estimation, that needs to be changed and done accordingly to the project requirements.
+All deployment logic is automated through a set of companion scripts inside the `scripts/` directory.
 
-Logs de teste de carga executado:
-[AWS] Instance i-03bf027c87bb54feb terminated with success.
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[AS] State -> Workers: 1 | Total Load: 0 | Média: 0.00
-[LB-RADAR] Received request: /fractals?w=40000&h=40000&n=20000 from /148.71.120.63:50718
-[ALOCATION] Forwarding request to Worker i-044c130d05c65c820 at 172.31.18.187 with current load: 1
-[AS] State -> Workers: 1 | Total Load: 1 | Média: 1.00
-[LB-RADAR] Received request: /fractals?w=40000&h=40000&n=20000 from /148.71.120.63:12431
-[ALOCATION] Forwarding request to Worker i-044c130d05c65c820 at 172.31.18.187 with current load: 2
-[LB-RADAR] Received request: /fractals?w=40000&h=40000&n=20000 from /148.71.120.63:50726
-[ALOCATION] Forwarding request to Worker i-044c130d05c65c820 at 172.31.18.187 with current load: 3
-[AS] State -> Workers: 1 | Total Load: 3 | Média: 3.00
-[LB-RADAR] Received request: /fractals?w=40000&h=40000&n=20000 from /148.71.120.63:12465
-[ALOCATION] Forwarding request to Worker i-044c130d05c65c820 at 172.31.18.187 with current load: 4
-[AS] State -> Workers: 1 | Total Load: 4 | Média: 4.00
-[AS] Traffic Alert! Scaling UP...
-[AWS] Success! New instance launching: i-0c139c7e90d7bfe0d
-[LB-RADAR] Received request: /fractals?w=40000&h=40000&n=20000 from /148.71.120.63:12473
-[ALOCATION] Forwarding request to Worker i-044c130d05c65c820 at 172.31.18.187 with current load: 5
-[AS] State -> Workers: 1 | Total Load: 5 | Média: 5.00
-[Handshake] New Worker ready! IP: 172.31.16.156 | ID: i-0c139c7e90d7bfe0d
-[AS] State -> Workers: 2 | Total Load: 5 | Média: 2.50
-[LB-RADAR] Received request: /fractals?w=400&h=400&n=200 from /148.71.120.63:50762
-[ALOCATION] Forwarding request to Worker i-0c139c7e90d7bfe0d at 172.31.16.156 with current load: 1
-[ALOCATION] Completed request for Worker i-0c139c7e90d7bfe0d at 172.31.16.156 with current load: 0
+1. **Configure AWS Details:** Make sure to correctly set up the `scripts/config.sh` file with your AWS credentials and configuration variables. Copy the provided template `scripts/config.sh.example` as a starting guide.
+2. **Build and Create AMI:** Traverse to the `scripts/` directory and run `./create-image.sh`. This script will launch a temporary instance, compile the codebase, execute `install-vm.sh` to configure all prerequisites on the machine, create an AWS AMI named *CNV-Image*, grab its ID into `image.id`, and finally terminate the temporary instance.
+3. **Deploy the Master Instance (LB + AS):** Execute `./deploy-lb.sh`. This script will:
+   * Perform a local build of the `loadbalancer` module.
+   * Launch your Permanent Master Instance in AWS.
+   * SSH into it to install Java 11.
+   * Transfer the credentials (`config.sh`), initialization files (`webserver-userdata.sh`), and the actual executable (`.jar`).
+   * Boot up the Load Balancer server in the background and pipe its outputs to `master.log`.
+
+
+**Note #1**: The Load Balancer will automatically bring up worker instances mapping the exact AMI you've just built. It scales outwards and inwards based on system load metrics (as defined in our AutoScaler algorithm).
+
+**Note #2**: The Load Balancer natively performs health checks on active workers every 5 seconds; workers that miss 3 consecutive pings are automatically pulled from the rotation and forcefully terminated.
