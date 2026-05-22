@@ -25,7 +25,7 @@ public class WebServer {
         loadBalancerIp = args[0]; 
         myInstanceId = args[1];
         
-        System.out.println("[Worker] O meu ID da AWS é: " + myInstanceId);
+        System.out.println("[Worker] AWS ID: " + myInstanceId);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(8000), 0);
         server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());

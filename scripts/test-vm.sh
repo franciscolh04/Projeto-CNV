@@ -2,19 +2,42 @@
 
 source config.sh
 
-# Requesting an instance reboot.
-aws ec2 reboot-instances --instance-ids $(cat instance.id)
-echo "Rebooting instance to test web server auto-start."
+TESTS_DIR="../tests"
+LB_IP=$(cat masterLB.dns)
+PARALLEL_JOBS=${1:-2}
 
-# Letting the instance shutdown.
-sleep 1
+echo "===== CNV Heavy Load Test - Trigger Autoscaling ====="
+echo "Target: $LB_IP"
+echo "Heavy parallel jobs: $PARALLEL_JOBS"
+echo ""
 
-# Wait for port 8000 to become available.
-while ! nc -z $(cat instance.dns) 8000; do
-	echo "Waiting for $(cat instance.dns):8000..."
-	sleep 0.5
+# Health check
+echo "[1] Health Check..."
+curl -s "http://$LB_IP:8000/ping" > /dev/null || { echo "Load Balancer is down"; exit 1; }
+echo "✓ Load Balancer is up"
+echo ""
+
+cd "$TESTS_DIR"
+
+echo "[2] Launching $PARALLEL_JOBS heavy workloads in parallel..."
+echo "(This will exceed 150k unit threshold to trigger autoscaling)"
+echo ""
+
+# Launch heavy XL/L tests in parallel
+for i in $(seq 1 $PARALLEL_JOBS); do
+    bash req-fractals-XL.sh "$LB_IP" > /dev/null 2>&1 &
+    bash req-grayscott-L.sh "$LB_IP" > /dev/null 2>&1 &
+    bash req-dna-XL.sh "$LB_IP" > /dev/null 2>&1 &
 done
 
-# Sending a query!
-echo "Sending a query!"
-curl $(cat instance.dns):8000/ping
+echo "$((PARALLEL_JOBS * 3)) workloads spawned"
+echo "Waiting for completion..."
+echo ""
+
+# Wait for all jobs
+wait
+
+echo "✓ All workloads completed"
+echo ""
+echo "Check master.log on the load balancer to see autoscaling in action"
+

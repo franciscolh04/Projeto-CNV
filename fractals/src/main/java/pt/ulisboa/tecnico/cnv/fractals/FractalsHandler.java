@@ -50,6 +50,10 @@ public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, 
             return;
         }
 
+        long startTime = System.currentTimeMillis();
+        String urlPart = he.getRequestURI().toString().substring(0, Math.min(100, he.getRequestURI().toString().length()));
+        System.out.println("[FRACTAL] START | " + he.getRequestMethod() + " | " + urlPart);
+
         // Parse request.
         URI requestedUri = he.getRequestURI();
         String query = requestedUri.getRawQuery();
@@ -59,6 +63,7 @@ public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, 
             int width = Integer.parseInt(parameters.getOrDefault("w", "800"));
             int height = Integer.parseInt(parameters.getOrDefault("h", "600"));
             int iterations = Integer.parseInt(parameters.getOrDefault("iterations", "100"));
+            System.out.println("[FRACTAL] PARAMS | w=" + width + ", h=" + height + ", it=" + iterations);
 
             String response = handleWorkload(width, height, iterations);
 
@@ -70,6 +75,7 @@ public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, 
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());
             os.close();
+            System.out.println("[FRACTAL] DONE | " + (System.currentTimeMillis() - startTime) + "ms");
         } catch (NumberFormatException e) {
             e.printStackTrace();
             String errorResponse = "{ \"error\":\"Parameters 'w', 'h', and 'iterations' must be valid integers.\"}";

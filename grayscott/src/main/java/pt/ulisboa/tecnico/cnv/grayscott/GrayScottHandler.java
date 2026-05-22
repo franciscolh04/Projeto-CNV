@@ -51,6 +51,10 @@ public class GrayScottHandler implements HttpHandler, RequestHandler<Map<String,
             return;
         }
 
+        long startTime = System.currentTimeMillis();
+        String urlPart = he.getRequestURI().toString().substring(0, Math.min(100, he.getRequestURI().toString().length()));
+        System.out.println("[GRAYSCOTT] START | " + he.getRequestMethod() + " | " + urlPart);
+
         // Parse request.
         URI requestedUri = he.getRequestURI();
         String query = requestedUri.getRawQuery();
@@ -63,6 +67,7 @@ public class GrayScottHandler implements HttpHandler, RequestHandler<Map<String,
             double K = Double.parseDouble(parameters.getOrDefault("k", "0.062"));
             boolean stopOnExtinction = Boolean.parseBoolean(parameters.getOrDefault("stopOnExtinction", "false"));
             String seedMode = parameters.getOrDefault("seedMode", "center");
+            System.out.println("[GRAYSCOTT] PARAMS | size=" + size + ", iter=" + maxIterations + ", seed=" + seedMode);
 
             String response = handleWorkload(size, maxIterations, F, K, stopOnExtinction, seedMode);
 
@@ -74,6 +79,7 @@ public class GrayScottHandler implements HttpHandler, RequestHandler<Map<String,
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());
             os.close();
+            System.out.println("[GRAYSCOTT] DONE | " + (System.currentTimeMillis() - startTime) + "ms");
         } catch (NumberFormatException e) {
             e.printStackTrace();
             String errorResponse = "{ \"error\":\"Invalid parameter format.\"}";

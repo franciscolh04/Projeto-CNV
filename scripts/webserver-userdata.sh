@@ -13,6 +13,7 @@ INSTANCE_ID=$(/usr/bin/curl \
 
 # Launch the webserver with Javassist instrumentation agent
 exec /usr/bin/java \
+    -Xmx512m \
     -javaagent:/home/ec2-user/instrumentation-1.0.0-SNAPSHOT.jar=ComplexityEstimator:pt.ulisboa.tecnico.cnv:output \
     -cp /home/ec2-user/webserver-1.0.0-SNAPSHOT-jar-with-dependencies.jar \
     pt.ulisboa.tecnico.cnv.webserver.WebServer \

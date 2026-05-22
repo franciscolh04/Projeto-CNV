@@ -5,9 +5,11 @@ import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.logging.Logger;
 import java.util.logging.Level;
@@ -27,7 +29,8 @@ public class LoadBalancerHandler implements HttpHandler {
     private static final Logger LOGGER = Logger.getLogger(LoadBalancerHandler.class.getName());
     
     // Separate timeouts: connect quickly, but wait for heavy workloads
-    private static final long CONNECT_TIMEOUT_MS = 5000;   // 5 seconds to establish connection    
+    private static final long CONNECT_TIMEOUT_MS = 5000;   // 5 seconds to establish connection
+    private static final long READ_TIMEOUT_MS = 120000;     // 120 seconds to read response (allow heavy workloads)
     private static final int WORKER_PORT = 8000;
     private static final int MAX_RETRIES = 1;
     
@@ -71,9 +74,12 @@ public class LoadBalancerHandler implements HttpHandler {
                     LOGGER.log(Level.WARNING, "Worker " + workerIp + " became unavailable during request");
                 }
                 
-            } catch (java.net.http.HttpTimeoutException | java.net.ConnectException e) {
-                LOGGER.log(Level.WARNING, "Worker " + workerIp + " timeout/connection failed on attempt " + (attempt + 1), e);
-                // TODO: Consider marking worker as unhealthy immediately on connect timeout, and let HealthChecker handle removal on repeated failures
+            } catch (java.net.http.HttpTimeoutException e) {
+                LOGGER.log(Level.WARNING, "Worker " + workerIp + " request timeout on attempt " + (attempt + 1) + " - may indicate slow/stuck workload", e);
+                // Will retry on next iteration
+                
+            } catch (java.net.ConnectException e) {
+                LOGGER.log(Level.WARNING, "Worker " + workerIp + " connection failed on attempt " + (attempt + 1), e);
                 // Will retry on next iteration
                 
             } catch (Exception e) {
@@ -90,20 +96,66 @@ public class LoadBalancerHandler implements HttpHandler {
     }
 
     /**
-     * Forwards request to worker node with dual timeout strategy:
-     * No timeout since health checker will terminate unresponsive workers, but catches timeout exceptions to trigger retries.
+     * Truncates a string for logging to prevent log pollution.
+     * Returns the full string if <= MAX_LENGTH, otherwise returns first MAX_LENGTH chars + "..."
+     */
+    private String truncateForLogging(String str) {
+        final int MAX_LENGTH = 100;
+        if (str == null || str.length() <= MAX_LENGTH) {
+            return str;
+        }
+        return str.substring(0, MAX_LENGTH) + "...";
+    }
+
+    /**
+     * Properly encodes a query string to handle special characters.
+     * Encodes parameter names and values while preserving the query structure.
+     */
+    private String encodeQueryString(String query) {
+        if (query == null || query.isEmpty()) {
+            return query;
+        }
+        
+        StringBuilder encoded = new StringBuilder();
+        String[] params = query.split("&");
+        
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) encoded.append("&");
+            
+            String[] parts = params[i].split("=", 2);
+            String key = URLEncoder.encode(parts[0], StandardCharsets.UTF_8);
+            encoded.append(key);
+            
+            if (parts.length > 1) {
+                encoded.append("=");
+                String value = URLEncoder.encode(parts[1], StandardCharsets.UTF_8);
+                encoded.append(value);
+            }
+        }
+        
+        return encoded.toString();
+    }
+
+    /**
+     * Forwards request to worker node with separate connect and read timeouts.
+     * Connect timeout: fail fast if worker is unreachable
+     * Read timeout: allow heavy workloads to complete processing
      */
     private String forwardRequest(String workerIp, String path, String query) throws Exception {
         String url = "http://" + workerIp + ":" + WORKER_PORT + path;
         if (query != null && !query.isEmpty()) {
-            url += "?" + query;
+            // Properly encode query parameters to handle special characters (colons, angle brackets, etc.)
+            String encodedQuery = encodeQueryString(query);
+            url += "?" + encodedQuery;
         }
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
+                .timeout(Duration.ofMillis(READ_TIMEOUT_MS))
                 .GET()
                 .build();
         
+        LOGGER.info("Forwarding request to worker " + workerIp + ": " + truncateForLogging(url));
         HttpResponse<String> response = httpClient.send(request, 
                 HttpResponse.BodyHandlers.ofString());
         
@@ -119,7 +171,7 @@ public class LoadBalancerHandler implements HttpHandler {
                 }
                 
                 LoadBalancer.metricsModelCache.put(cacheKey, realCost);
-                LOGGER.info("[Metrics] Learned new cost for " + cacheKey + " -> " + rawCost + " ops -> " + realCost + " units");
+                LOGGER.info("[Metrics] Learned new cost for " + truncateForLogging(cacheKey) + " -> " + rawCost + " ops -> " + realCost + " units");
                 
             } catch (NumberFormatException e) {
                 LOGGER.warning("Invalid format for X-Request-Cost header received.");
@@ -145,7 +197,7 @@ public class LoadBalancerHandler implements HttpHandler {
 
         Integer learnedCost = LoadBalancer.metricsModelCache.get(cacheKey);
         if (learnedCost != null) {
-            LOGGER.info("[Estimation] Cache hit for " + cacheKey + ". Cost: " + learnedCost);
+            LOGGER.info("[Estimation] Cache hit for " + truncateForLogging(cacheKey) + ". Cost: " + learnedCost);
             return learnedCost;
         }
 
@@ -164,14 +216,14 @@ public class LoadBalancerHandler implements HttpHandler {
                 long h = Long.parseLong(params.getOrDefault("h", "1"));
                 long rawCost = w * h * 1550L;
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation/Heuristic] FRACTAL " + cacheKey + " -> Raw: " + rawCost + " Units: " + cost);
+                LOGGER.info("[Estimation/Heuristic] FRACTAL " + truncateForLogging(cacheKey) + " -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             } else if (path.contains("grayscott")) {
                 long s = Long.parseLong(params.getOrDefault("size", "1"));
                 long n = Long.parseLong(params.getOrDefault("maxIterations", "1"));
                 long rawCost = s * s * n * 273L;
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation/Heuristic] GRAYSCOTT " + cacheKey + " -> Raw: " + rawCost + " Units: " + cost);
+                LOGGER.info("[Estimation/Heuristic] GRAYSCOTT " + truncateForLogging(cacheKey) + " -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             } else if (path.contains("dna")) {
                 // seq lengths
@@ -179,14 +231,14 @@ public class LoadBalancerHandler implements HttpHandler {
                 String s2 = params.getOrDefault("seq2", "");
                 long rawCost = (long) s1.length() * (long) s2.length() * 16L;
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation/Heuristic] DNA " + cacheKey + " -> Raw: " + rawCost + " Units: " + cost);
+                LOGGER.info("[Estimation/Heuristic] DNA " + truncateForLogging(cacheKey) + " -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             }
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "[Estimation] Error calculating heuristic", e);
         }
 
-        LOGGER.info("[Estimation] Unknown request " + cacheKey + ". Using default.");
+        LOGGER.info("[Estimation] Unknown request " + truncateForLogging(cacheKey) + ". Using default.");
         return 10; // 10 units = 10,000,000 instructions default
     }
 
@@ -205,6 +257,7 @@ public class LoadBalancerHandler implements HttpHandler {
                 bestNode = node;
             }
         }
+        LOGGER.info("Selected worker " + (bestNode != null ? bestNode.getIp() : "none") + " with current work " + minWork);
         return bestNode;
     }
 
@@ -215,6 +268,7 @@ public class LoadBalancerHandler implements HttpHandler {
     private void sendResponse(HttpExchange exchange, int statusCode, String responseBody) 
             throws IOException {
         exchange.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         
         byte[] responseBytes = responseBody.getBytes("UTF-8");
         exchange.sendResponseHeaders(statusCode, responseBytes.length);

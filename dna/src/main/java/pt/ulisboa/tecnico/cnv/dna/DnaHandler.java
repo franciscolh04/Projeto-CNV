@@ -51,6 +51,10 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
             return;
         }
 
+        long startTime = System.currentTimeMillis();
+        String urlPart = he.getRequestURI().toString().substring(0, Math.min(100, he.getRequestURI().toString().length()));
+        System.out.println("[DNA] START | " + he.getRequestMethod() + " | " + urlPart);
+
         URI requestedUri = he.getRequestURI();
         String query = requestedUri.getRawQuery();
         Map<String, String> parameters = queryToMap(query);
@@ -63,6 +67,7 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
             String stopOnFirstParam = parameters.getOrDefault("stopOnFirst", "false");
             int minLength = Integer.parseInt(minLengthParam);
             boolean stopOnFirst = Boolean.parseBoolean(stopOnFirstParam);
+            System.out.println("[DNA] PARAMS | minLen=" + minLength + ", stopFirst=" + stopOnFirst);
 
             String response = handleWorkload(seq1Param, seq2Param, minLength, stopOnFirst);
 
@@ -74,6 +79,7 @@ public class DnaHandler implements HttpHandler, RequestHandler<Map<String, Strin
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());
             os.close();
+            System.out.println("[DNA] DONE | " + (System.currentTimeMillis() - startTime) + "ms");
 
         } catch (NumberFormatException e) {
             e.printStackTrace();

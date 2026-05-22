@@ -43,6 +43,7 @@ public class HealthChecker implements Runnable {
             int strikes = node.getMissedPings();
 
             if (isAlive(ip)) {
+                System.out.println("[HealthChecker] Worker " + ip + " is alive.");
                 node.setMissedPings(0); // Reset strikes on successful ping
                 continue;
             }

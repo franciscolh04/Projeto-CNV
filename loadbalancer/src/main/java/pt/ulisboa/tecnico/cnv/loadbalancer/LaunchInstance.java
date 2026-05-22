@@ -47,6 +47,9 @@ public class LaunchInstance {
 
     public String launchInstance(String masterIP) {
         try {
+
+            LOGGER.info("[LI] Started launching new instance with master IP: " + masterIP);
+
             // Read and prepare userdata script with master IP injection
             String userDataScript = prepareUserDataScript(masterIP);
             
@@ -70,13 +73,14 @@ public class LaunchInstance {
 
             RunInstancesResponse response = ec2Client.runInstances(request);
             String instanceId = response.instances().get(0).instanceId();
-            System.out.println("Instance launched: " + instanceId);
+            System.out.println("[LI] Instance launched: " + instanceId);
             
             String privateIp = waitForInstanceReady(instanceId);
             
             if (privateIp != null) {
                 System.out.println("Instance ready with IP: " + privateIp);
                 // LoadBalancer.activeWorkers.put(privateIp, new WorkerNode(instanceId, privateIp));
+                LOGGER.info("[LI] Instance " + instanceId + " is ready with IP: " + privateIp);
                 return instanceId;
             } else {
                 System.out.println("Timeout waiting for instance IP");
@@ -115,8 +119,18 @@ public class LaunchInstance {
 
     private String waitForInstanceReady(String instanceId) {
         long startTime = System.currentTimeMillis();
+        long checkInterval = CHECK_INTERVAL;
+        int attemptCount = 0;
+        
+        // Wait a bit before first check - AWS needs time to propagate the instance
+        try {
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         
         while (System.currentTimeMillis() - startTime < WAIT_TIME_FOR_READY) {
+            attemptCount++;
             try {
                 DescribeInstancesRequest request = DescribeInstancesRequest.builder()
                         .instanceIds(instanceId)
@@ -134,10 +148,50 @@ public class LaunchInstance {
                     }
                 }
                 
-                Thread.sleep(CHECK_INTERVAL);
+                // Reset backoff on success (even if not ready yet)
+                checkInterval = CHECK_INTERVAL;
                 
+                Thread.sleep(checkInterval);
+                
+            } catch (AwsServiceException e) {
+                // Handle transient errors (instance not yet visible in EC2 service)
+                int statusCode = e.statusCode();
+                String errorCode = e.awsErrorDetails() != null ? 
+                    e.awsErrorDetails().errorCode() : "Unknown";
+                
+                if ((statusCode == 400 || statusCode == 404) && 
+                    (errorCode.contains("does not exist") || errorCode.equals("InvalidInstanceID.NotFound"))) {
+                    // This is expected when instance just launched - AWS needs time to propagate
+                    LOGGER.log(Level.FINE, "[LI] Instance " + instanceId + " not yet visible (attempt " + 
+                        attemptCount + "), retrying...");
+                    // Use exponential backoff with jitter, capped at 10 seconds
+                    long jitter = (long)(Math.random() * 1000);
+                    checkInterval = Math.min(1000L * (1L << Math.min(attemptCount / 3, 3)), 10000L) + jitter;
+                } else {
+                    // Unexpected AWS error
+                    LOGGER.log(Level.WARNING, "[LI] AWS error checking instance status (code: " + 
+                        statusCode + ", error: " + errorCode + ")", e);
+                    checkInterval = CHECK_INTERVAL;
+                }
+                
+                try {
+                    Thread.sleep(checkInterval);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Error checking instance status", e);
+                LOGGER.log(Level.WARNING, "[LI] Unexpected error checking instance status", e);
+                try {
+                    Thread.sleep(CHECK_INTERVAL);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
         }
         
@@ -151,7 +205,7 @@ public class LaunchInstance {
                     .build();
             
             ec2Client.terminateInstances(request);
-            System.out.println("Instance terminated: " + instanceId);
+            System.out.println("[LI] Instance terminated: " + instanceId);
             
         } catch (AwsServiceException e) {
             LOGGER.log(Level.SEVERE, "Error terminating instance", e);
@@ -171,7 +225,6 @@ public class LaunchInstance {
                     }
                 }
             }
-            
         } catch (AwsServiceException e) {
             LOGGER.log(Level.SEVERE, "Error terminating instance by IP", e);
         }
