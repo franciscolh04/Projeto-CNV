@@ -15,30 +15,18 @@ import java.util.logging.Logger;
 import java.util.logging.Level;
 
 /**
- * HTTP handler implementing load balancing logic.
- * Routes client requests to healthy worker instances via reverse proxy.
- * 
- * Request Strategy:
- * - Uses HttpClient consistently with separate connect and read timeouts
- * - Connect timeout: 5s (fail fast on unreachable workers)
- * - Read timeout: 30s (allow workload processing time)
- * - Retry logic: if worker disappears from activeWorkers, retry once on another worker
- * - Response forwarding: sends worker response directly to client
+ * HTTP handler: Routes client requests to least-loaded healthy worker.
  */
 public class LoadBalancerHandler implements HttpHandler {
     private static final Logger LOGGER = Logger.getLogger(LoadBalancerHandler.class.getName());
-    
-    // Separate timeouts: connect quickly, but wait for heavy workloads
-    private static final long CONNECT_TIMEOUT_MS = 5000;   // 5 seconds to establish connection
-    private static final long READ_TIMEOUT_MS = 120000;     // 120 seconds to read response (allow heavy workloads)
+    private static final long CONNECT_TIMEOUT_MS = 5000;
+    private static final long READ_TIMEOUT_MS = 120000;
     private static final int WORKER_PORT = 8000;
     private static final int MAX_RETRIES = 1;
     
     private final HttpClient httpClient;
 
     public LoadBalancerHandler() {
-        // Configure HttpClient with separate connect timeout
-        // Read timeout is handled per-request
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MS))
                 .build();
@@ -174,7 +162,7 @@ public class LoadBalancerHandler implements HttpHandler {
                 LOGGER.info("[Metrics] Learned new cost for " + truncateForLogging(cacheKey) + " -> " + rawCost + " ops -> " + realCost + " units");
                 
             } catch (NumberFormatException e) {
-                LOGGER.warning("Invalid format for X-Request-Cost header received.");
+                LOGGER.warning("[LB] Invalid X-Request-Cost header");
             }
         });
         
@@ -242,22 +230,39 @@ public class LoadBalancerHandler implements HttpHandler {
         return 10; // 10 units = 10,000,000 instructions default
     }
 
-    /**
-     * Selects worker with least current work (load balancing strategy).
-     * Returns null if no healthy workers available.
-     */
+    // Select worker with lowest weighted score combining CPU and work
     private WorkerNode getSuitableServer() {
         WorkerNode bestNode = null;
-        int minWork = Integer.MAX_VALUE;
+        double minScore = Double.MAX_VALUE;
+        final double WEIGHT_CPU = 0.4, WEIGHT_WORK = 0.6;
 
         for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
-            int currentWork = node.getWork().get();
-            if (currentWork < minWork) {
-                minWork = currentWork;
+            // Normalize CPU from 0-100 to 0-1
+            double cpuNormalized = node.getCpuUtilization() / 100.0;
+            
+            // Relative work: current work / max capacity
+            double relativeWork = node.getRelativeWork();
+            
+            // Weighted score
+            double score = (WEIGHT_CPU * cpuNormalized) + (WEIGHT_WORK * relativeWork);
+            
+            LOGGER.fine("[LB] Worker " + node.getIp() + " score=" + String.format("%.3f", score) + 
+                " (cpu=" + String.format("%.1f", node.getCpuUtilization()) + "%, work=" + 
+                node.getWork().get() + "/" + node.getMaxCapacity() + ")");
+            
+            if (score < minScore) {
+                minScore = score;
                 bestNode = node;
             }
         }
-        LOGGER.info("Selected worker " + (bestNode != null ? bestNode.getIp() : "none") + " with current work " + minWork);
+        
+        if (bestNode != null) {
+            LOGGER.info("[LB] Selected worker " + bestNode.getIp() + " with score " + 
+                String.format("%.3f", minScore));
+        } else {
+            LOGGER.warning("[LB] No suitable worker found");
+        }
+        
         return bestNode;
     }
 

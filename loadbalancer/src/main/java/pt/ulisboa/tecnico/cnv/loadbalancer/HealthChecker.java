@@ -11,15 +11,12 @@ import java.util.logging.Logger;
 import java.util.logging.Level;
 
 /**
- * Health checker that periodically validates worker availability.
- * Uses same HttpClient pattern as LoadBalancerHandler for consistency.
- * Removes and terminates unhealthy workers to prevent zombie processes.
+ * Health checker: Validates worker availability and extracts CPU via /ping endpoint.
  */
 public class HealthChecker implements Runnable {
     private static final Logger LOGGER = Logger.getLogger(HealthChecker.class.getName());
-    
-    private static final long CONNECT_TIMEOUT_MS = 5000;   // 5 seconds
-    private static final long READ_TIMEOUT_MS = 10000;     // 10 seconds (ping is fast)
+    private static final int CONNECT_TIMEOUT_MS = 5000;
+    private static final int READ_TIMEOUT_MS = 10000;
     private static final int WORKER_PORT = 8000;
     private static final int MAX_STRIKES = 3;
     
@@ -38,37 +35,30 @@ public class HealthChecker implements Runnable {
         while (it.hasNext()) {
             Map.Entry<String, WorkerNode> entry = it.next();
             WorkerNode node = entry.getValue();
-            String ip = node.getIp();
-            String instanceId = node.getInstanceId();
-            int strikes = node.getMissedPings();
 
-            if (isAlive(ip)) {
-                System.out.println("[HealthChecker] Worker " + ip + " is alive.");
+            if (isAlive(node)) {
+                System.out.println("[HC] Worker " + node.getIp() + " is alive (CPU: " + 
+                    String.format("%.2f", node.getCpuUtilization()) + "%).");
                 node.setMissedPings(0); // Reset strikes on successful ping
                 continue;
             }
             
-            strikes++;
+            int strikes = node.getMissedPings() + 1;
             node.setMissedPings(strikes);
-            System.out.println("[HealthChecker] Worker " + node.getIp() + " missed ping (" + strikes + "/" + MAX_STRIKES + ")");
+            LOGGER.info("[HC] Worker " + node.getIp() + " missed ping (" + strikes + "/" + MAX_STRIKES + ")");
 
             if (strikes >= MAX_STRIKES) {
-                System.out.println("[HealthChecker] Worker " + node.getIp() + " is dead. Removing...");
-                it.remove(); 
-
-                // Terminate the EC2 instance to prevent zombie processes
-                terminateInstance(instanceId, ip);
+                LOGGER.info("[HC] Removing dead worker " + node.getIp());
+                it.remove();
+                terminateInstance(node.getInstanceId(), node.getIp());
             }
         }
     }
 
-    /**
-     * Checks if worker is alive using ping endpoint with dual timeout strategy.
-     * Uses same HttpClient pattern as LoadBalancerHandler for consistency.
-     */
-    private boolean isAlive(String ip) {
+    // Extract CPU metric from X-CPU-Utilization header and record in WorkerNode history
+    private boolean isAlive(WorkerNode node) {
         try {
-            String url = "http://" + ip + ":" + WORKER_PORT + "/ping";
+            String url = "http://" + node.getIp() + ":" + WORKER_PORT + "/ping";
             
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -79,26 +69,34 @@ public class HealthChecker implements Runnable {
             HttpResponse<String> response = httpClient.send(request, 
                     HttpResponse.BodyHandlers.ofString());
             
-            return response.statusCode() == 200;
+            if (response.statusCode() == 200) {
+                response.headers().firstValue("X-CPU-Utilization")
+                    .ifPresent(cpuStr -> {
+                        try {
+                            node.setCpuUtilization(Double.parseDouble(cpuStr));
+                        } catch (NumberFormatException e) {
+                            LOGGER.fine("[HC] Invalid CPU header: " + cpuStr);
+                        }
+                    });
+                return true;
+            }
+            
+            return false;
             
         } catch (java.net.http.HttpTimeoutException | java.net.ConnectException e) {
-            LOGGER.log(Level.FINE, "Worker " + ip + " health check timed out or unreachable", e);
+            LOGGER.fine("[HC] Worker " + node.getIp() + " unreachable");
             return false;
         } catch (Exception e) {
-            LOGGER.log(Level.FINE, "Worker " + ip + " health check failed: " + e.getMessage(), e);
+            LOGGER.fine("[HC] Health check failed for " + node.getIp());
             return false;
         }
     }
 
-    /**
-     * Terminates the EC2 instance associated with this worker.
-     * Prevents zombie processes from remaining after worker is removed.
-     */
     private void terminateInstance(String instanceId, String ip) {
         try {
             LaunchInstance launcher = new LaunchInstance();
             launcher.terminateInstance(instanceId);
-            LOGGER.log(Level.INFO, "Terminated instance " + instanceId + " for dead worker " + ip);
+            LOGGER.log(Level.INFO, "[HC] Terminated instance " + instanceId + " for dead worker " + ip);
             launcher.close();
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error terminating instance " + instanceId, e);

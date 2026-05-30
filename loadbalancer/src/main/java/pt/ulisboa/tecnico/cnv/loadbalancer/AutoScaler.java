@@ -10,16 +10,30 @@ import java.util.List;
 import java.util.ArrayList;
 
 /**
- * Auto-scaling thread - scales EC2 instances based on average worker load.
+ * Auto-scaling thread - scales EC2 instances based on Weighted Score combining:
+ * - CPU Utilization (weight W1 = 0.4)
+ * - Relative Work (weight W2 = 0.6)
+ * 
+ * Score = (W1 * avgCPU) + (W2 * currentWork/maxCapacity)
+ * 
+     * Scale up/down decisions are smoothed with averaging to avoid oscillations.
  */
 public class AutoScaler implements Runnable {
     private static final Logger LOGGER = Logger.getLogger(AutoScaler.class.getName());
-    private static final double MAX_WORK_THRESHOLD = 150000.0; // ~150B instructions
-    private static final double MIN_WORK_THRESHOLD = 20000.0; // ~20B instructions
+    
+    // Scale thresholds based on Weighted Score (0.0 to 1.0+)
+    private static final double SCALE_UP_THRESHOLD = 0.7;    // Scale up when average score > 0.7
+    private static final double SCALE_DOWN_THRESHOLD = 0.3;  // Scale down when average score < 0.3
+    
+    // Weighted Score weights
+    private static final double WEIGHT_CPU = 0.4;           // CPU contribution (40%)
+    private static final double WEIGHT_RELATIVE_WORK = 0.6; // Relative work contribution (60%)
+    
+    // Instance limits
     private static final int MIN_INSTANCES = 1;
     private static final int MAX_INSTANCES = 10;
-    private static final long COOLDOWN_MS = 120000;
-    private static final long DRAIN_TIMEOUT_MS = 60000; // 60 seconds timeout for draining
+    private static final long COOLDOWN_MS = 120000;         // 2 minutes between scale operations
+    private static final long DRAIN_TIMEOUT_MS = 60000;     // 60 seconds timeout for draining
 
     private final LaunchInstance launchInstanceManager;
     private final String masterIp;
@@ -63,63 +77,35 @@ public class AutoScaler implements Runnable {
             int totalWorkers = LoadBalancer.activeWorkers.size();
             long timeSinceLastScale = System.currentTimeMillis() - lastScaleOperation;
 
-            if (totalWorkers == 0){
-                // Scales out immediately if cooldown has passed and there are no active workers
+            // Edge case: no active workers, scale out immediately
+            if (totalWorkers == 0) {
                 if (lastScaleOperation == 0 || timeSinceLastScale > COOLDOWN_MS) {
                     scaleOut();
                     lastScaleOperation = System.currentTimeMillis();
                 }
                 return;
-            };
-
-            int totalWork = 0;
-            for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
-                LOGGER.info("[AS] Worker " + node.getIp() + " current work: " + node.getWork().get());
-                totalWork += node.getWork().get();
             }
-            
-            double avgWork = (double) totalWork / totalWorkers;
 
-            LOGGER.info("[AS] Status: workers=" + totalWorkers + ", totalWork=" + totalWork + ", avgWork=" + String.format("%.0f", avgWork) + ", timeSinceLastScale=" + timeSinceLastScale + "ms, cooldown=" + COOLDOWN_MS + "ms");
+            // Calculate averages
+            double avgWork = calculateAverageWork();
+            double avgCpuPercent = calculateAverageCpuUtilization();
+            double weightedScore = calculateClusterWeightedScore();
 
-            // Scale out: average work above threshold, under max instances, and cooldown passed
-            if (avgWork > MAX_WORK_THRESHOLD && totalWorkers < MAX_INSTANCES && timeSinceLastScale > COOLDOWN_MS) {
+            LOGGER.info("[AS] Cluster Status: workers=" + totalWorkers + " avgWork=" + 
+                String.format("%.0f", avgWork) + " avgCPU=" + String.format("%.1f", avgCpuPercent) + 
+                "% score=" + String.format("%.3f", weightedScore) + " timeSinceScale=" + timeSinceLastScale + "ms");
+
+            // Scale decisions (cooldown is checked inside)
+            if (shouldScaleUp(totalWorkers, timeSinceLastScale, weightedScore)) {
                 scaleOut();
                 lastScaleOperation = System.currentTimeMillis();
-            } 
-            // Scale in: 3 min grace period passed and work below minimum threshold
-            else if (timeSinceLastScale >= COOLDOWN_MS && avgWork < MIN_WORK_THRESHOLD && 
-                     totalWorkers > MIN_INSTANCES) {
-
-                LOGGER.info("[AS] Scale down conditions met. Checking cluster stability (workers=" + totalWorkers + ", avgWork=" + String.format("%.0f", avgWork) + ")");
-
-                boolean isClusterStable = true;
-                for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
-                    if (node.getMissedPings() > 0) {
-                        isClusterStable = false;
-                        LOGGER.info("[AS] Worker " + node.getIp() + " has " + node.getMissedPings() + " missed pings - cluster unstable");
-                        break;
-                    }
-                }
-
-                if (!isClusterStable) {
-                    LOGGER.info("[AS] Cluster is not stable (some workers missed pings). Skipping scale in.");
-                    return;
-                }
-
+            } else if (shouldScaleDown(totalWorkers, timeSinceLastScale, weightedScore)) {
                 String workerToRemove = findLeastLoadedWorker();
                 if (workerToRemove != null) {
-                    LOGGER.info("[AS] Initiating scale down - removing worker " + workerToRemove);
+                    LOGGER.info("[AS] Scale down: removing worker " + workerToRemove + 
+                        " (score=" + String.format("%.2f", weightedScore) + ")");
                     initiateScaleIn(workerToRemove);
                     lastScaleOperation = System.currentTimeMillis();
-                }
-            } else {
-                if (timeSinceLastScale < COOLDOWN_MS) {
-                    LOGGER.fine("[AS] Cooldown active: " + (COOLDOWN_MS - timeSinceLastScale) + "ms remaining");
-                } else if (avgWork >= MIN_WORK_THRESHOLD) {
-                    LOGGER.fine("[AS] Work too high for scale down: " + String.format("%.0f", avgWork) + " >= " + MIN_WORK_THRESHOLD);
-                } else if (totalWorkers <= MIN_INSTANCES) {
-                    LOGGER.fine("[AS] Cannot scale down: already at minimum instances (" + totalWorkers + ")");
                 }
             }
         } catch (Exception e) {
@@ -202,5 +188,154 @@ public class AutoScaler implements Runnable {
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error during scale out", e);
         }
+    }
+    
+    /**
+     * Calculates the average work across all active workers (using historical average).
+     * This smooths out momentary spikes and gives a better representation of sustained load.
+     */
+    private double calculateAverageWork() {
+        if (LoadBalancer.activeWorkers.isEmpty()) {
+            return 0.0;
+        }
+        
+        double totalAvgWork = 0.0;
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            totalAvgWork += node.getAverageWork();
+        }
+        
+        return totalAvgWork / LoadBalancer.activeWorkers.size();
+    }
+
+    /**
+     * Calculates the average CPU utilization across all active workers (using historical average).
+     * Uses time-windowed average instead of latest value to smooth out spikes.
+     * 
+     * @return percentage (0-100), or 0 if no active workers
+     */
+    private double calculateAverageCpuUtilization() {
+        if (LoadBalancer.activeWorkers.isEmpty()) {
+            return 0.0;
+        }
+        
+        double totalCpu = 0.0;
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            totalCpu += node.getAverageCpuUtilization();
+        }
+        
+        return totalCpu / LoadBalancer.activeWorkers.size();
+    }
+
+    /**
+     * Calculates the Weighted Score for an individual worker using historical averages.
+     * 
+     * Score = (WEIGHT_CPU * avg_CPU%) + (WEIGHT_RELATIVE_WORK * avg_RelativeWork)
+     * 
+     * This provides smoother scaling decisions based on sustained metrics, not momentary peaks.
+     * 
+     * @param worker the WorkerNode to evaluate
+     * @return score between 0 and 1+
+     */
+    private double calculateWorkerScore(WorkerNode worker) {
+        // Use historical average CPU (0-100) normalized to 0-1
+        double cpuNormalized = worker.getAverageCpuUtilization() / 100.0;
+        
+        // Use historical average relative work
+        double relativeWork = worker.getAverageRelativeWork();
+        
+        // Weighted score
+        double score = (WEIGHT_CPU * cpuNormalized) + (WEIGHT_RELATIVE_WORK * relativeWork);
+        
+        return score;
+    }
+
+    /**
+     * Calculates the average Weighted Score of the entire cluster.
+     * 
+     * @return average score across all workers
+     */
+    private double calculateClusterWeightedScore() {
+        if (LoadBalancer.activeWorkers.isEmpty()) {
+            return 0.0;
+        }
+        
+        double totalScore = 0.0;
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            totalScore += calculateWorkerScore(node);
+        }
+        
+        return totalScore / LoadBalancer.activeWorkers.size();
+    }
+
+    /**
+     * Determines if cluster should scale up (add workers).
+     * 
+     * Conditions:
+     * - Cluster average score > SCALE_UP_THRESHOLD
+     * - Number of workers < MAX_INSTANCES
+     * - Cooldown has passed
+     * - Cluster is stable (no missed pings)
+     */
+    private boolean shouldScaleUp(int totalWorkers, long timeSinceLastScale, double weightedScore) {
+        // Check cooldown
+        if (timeSinceLastScale < COOLDOWN_MS) {
+            return false;
+        }
+        
+        // Check max instance limit
+        if (totalWorkers >= MAX_INSTANCES) {
+            LOGGER.fine("[AS] Cannot scale up: at max instances (" + totalWorkers + ")");
+            return false;
+        }
+        
+        // Check cluster stability
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            if (node.getMissedPings() > 0) {
+                LOGGER.fine("[AS] Cannot scale up: cluster unstable (worker " + node.getIp() + " missed pings)");
+                return false;
+            }
+        }
+        
+        // Check score
+        boolean shouldScale = weightedScore > SCALE_UP_THRESHOLD;
+        if (shouldScale) {
+            LOGGER.info("[AS] Scale up condition met: score=" + String.format("%.3f", weightedScore) + 
+                " > " + SCALE_UP_THRESHOLD);
+        }
+        
+        return shouldScale;
+    }
+
+    /**
+     * Determines if cluster should scale down.
+     */
+    private boolean shouldScaleDown(int totalWorkers, long timeSinceLastScale, double weightedScore) {
+        // Check cooldown
+        if (timeSinceLastScale < COOLDOWN_MS) {
+            return false;
+        }
+        
+        // Check min instance limit
+        if (totalWorkers <= MIN_INSTANCES) {
+            LOGGER.fine("[AS] Cannot scale down: at min instances (" + totalWorkers + ")");
+            return false;
+        }
+
+        // Check missed pings
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            if (node.getMissedPings() > 0) {
+                LOGGER.fine("[AS] Cannot scale down: cluster unstable (worker " + node.getIp() + " missed pings)");
+                return false;
+            }
+        }
+        
+        // Check score
+        boolean shouldScale = weightedScore < SCALE_DOWN_THRESHOLD;
+        if (shouldScale) {
+            LOGGER.info("[AS] Scale down: score=" + String.format("%.3f", weightedScore) + 
+                " < " + SCALE_DOWN_THRESHOLD);
+        }
+        
+        return shouldScale;
     }
 }
