@@ -58,7 +58,13 @@ scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH config.sh ec2-user@$
 scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ./webserver-userdata.sh ec2-user@$MASTER_PUBLIC_DNS:/home/ec2-user/
 
 echo "==================================================="
-echo " Step 6: Start the System in the Background"
+echo " Step 6: Register the faas Functions"
+echo "==================================================="
+
+./function-register.sh
+
+echo "==================================================="
+echo " Step 7: Start the System in the Background"
 echo "==================================================="
 # The 'nohup' command ensures that the server continues to run even when you close your terminal.
 # The output is saved in the master.log file
