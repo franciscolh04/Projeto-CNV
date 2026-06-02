@@ -21,7 +21,7 @@ public class WorkerNode {
     private int historySamples = 0;
 
     public WorkerNode(String instanceId, String ip) {
-        this(instanceId, ip, 100000);
+        this(instanceId, ip, 100000); //TODO: Tune this default capacity
     }
 
     public WorkerNode(String instanceId, String ip, int maxCapacity) {
