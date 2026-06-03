@@ -9,18 +9,19 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 /**
- * Singleton CPU monitor: Collects samples every 500ms, maintains 10-second moving average.
+ * Singleton CPU monitor: Collects samples every 500ms, maintains 90-second moving average.
  */
 public class CPUMonitor {
     private static final Logger LOGGER = Logger.getLogger(CPUMonitor.class.getName());
     private static final CPUMonitor INSTANCE = new CPUMonitor();
-    private static final int WINDOW_SECONDS = 10;
+    private static final int WINDOW_SECONDS = 90;
     private static final int SAMPLE_INTERVAL_MS = 500;
     private static final int SAMPLES_PER_WINDOW = (WINDOW_SECONDS * 1000) / SAMPLE_INTERVAL_MS;
     
     private final OperatingSystemMXBean osBean;
     private final ConcurrentLinkedQueue<Double> cpuSamples;
     private final ScheduledExecutorService samplerThread;
+    private volatile double currentAverage = 0.0;
     
     private CPUMonitor() {
         this.osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
@@ -46,18 +47,22 @@ public class CPUMonitor {
                 while (cpuSamples.size() > SAMPLES_PER_WINDOW) {
                     cpuSamples.poll();
                 }
+                
+                // Calculate moving average
+                double sum = 0.0;
+                for (Double sample : cpuSamples) {
+                    sum += sample;
+                }
+                currentAverage = cpuSamples.isEmpty() ? 0.0 : sum / cpuSamples.size();
             }
         } catch (Exception e) {
             LOGGER.warning("[CPUMonitor] Error collecting CPU sample: " + e.getMessage());
         }
     }
     
-    // Moving average over 10-second window
+    // Moving average over 90-second window
     public double getCpuUtilization() {
-        if (cpuSamples.isEmpty()) return 0.0;
-        double sum = 0.0;
-        for (Double sample : cpuSamples) sum += sample;
-        return sum / cpuSamples.size();
+        return currentAverage;
     }
     
     public double getCpuUtilizationPercent() { return getCpuUtilization() * 100.0; }
