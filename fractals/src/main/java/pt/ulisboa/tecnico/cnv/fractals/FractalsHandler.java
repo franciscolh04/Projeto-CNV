@@ -1,10 +1,5 @@
 package pt.ulisboa.tecnico.cnv.fractals;
 
-import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.RequestHandler;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
@@ -15,8 +10,24 @@ import java.net.URI;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+
+import com.amazonaws.services.lambda.runtime.Context;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
 public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, String>, String> {
+
+    // DynamoDB client for saving request metrics
+    private static final DynamoDbAsyncClient dynamoClient = DynamoDbAsyncClient.builder()
+            .region(Region.US_EAST_1)
+            .build();
 
     /**
      * Entrypoint for the workload.
@@ -71,11 +82,31 @@ public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, 
             long cost = pt.ulisboa.tecnico.cnv.javassist.tools.ComplexityEstimator.getAndResetCost();
             he.getResponseHeaders().add("X-Request-Cost", String.valueOf(cost));
 
+            // Save request and cost to DynamoDB
+            try {
+                Map<String, AttributeValue> item = new HashMap<>();
+                item.put("requestId", AttributeValue.builder().s(UUID.randomUUID().toString()).build());
+                item.put("timestamp", AttributeValue.builder().n(String.valueOf(System.currentTimeMillis())).build());
+                item.put("workloadType", AttributeValue.builder().s("fractals").build());
+                item.put("params", AttributeValue.builder().s(query == null ? "" : query).build());
+                item.put("actualCost", AttributeValue.builder().n(String.valueOf(cost)).build());
+
+                PutItemRequest putReq = PutItemRequest.builder()
+                        .tableName("RequestHistory")
+                        .item(item)
+                        .build();
+
+                dynamoClient.putItem(putReq);
+            } catch (Exception e) {
+                System.err.println("[Metrics] Failed to write to DynamoDB: " + e.getMessage());
+            }
+
             he.sendResponseHeaders(200, response.length());
             OutputStream os = he.getResponseBody();
             os.write(response.getBytes());
             os.close();
             System.out.println("[FRACTAL] DONE | " + (System.currentTimeMillis() - startTime) + "ms");
+
         } catch (NumberFormatException e) {
             e.printStackTrace();
             String errorResponse = "{ \"error\":\"Parameters 'w', 'h', and 'iterations' must be valid integers.\"}";
