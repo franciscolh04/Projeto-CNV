@@ -3,9 +3,10 @@ package pt.ulisboa.tecnico.cnv.loadbalancer;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
-import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Logger;
 
@@ -37,42 +38,42 @@ public class MSSPoller implements Runnable {
     public void run() {
         try {
             long currentPollTime = System.currentTimeMillis();
-            String[] workloadTypes = {"grayscott", "fractals", "dna"};
 
-            for (String typeName : workloadTypes) {
-                // Note: Replacing Scan for Query requires that an index exists in DynamoDB
-                // (or that the main table has 'workloadType' as Hash Key and 'timestamp' as Sort Key).
-                // If it is a Global Secondary Index (GSI), uncomment line `.indexName(...)`
-                QueryRequest queryRequest = QueryRequest.builder()
-                        .tableName(TABLE_NAME)
-                        // .indexName("WorkloadTypeIndex") // <- Use your GSI's name, if it's the case
-                        .keyConditionExpression("workloadType = :type AND #ts > :lastTime")
-                        .expressionAttributeNames(Map.of("#ts", "timestamp"))
-                        .expressionAttributeValues(Map.of(
-                                ":type", AttributeValue.builder().s(typeName).build(),
-                                ":lastTime", AttributeValue.builder().n(String.valueOf(lastPollTime)).build()
-                        ))
-                        .build();
+            // Set up expression values for filtering
+            Map<String, AttributeValue> expressionValues = new HashMap<>();
+            expressionValues.put(":lastTime", AttributeValue.builder().n(String.valueOf(this.lastPollTime)).build());
 
-                QueryResponse response = dynamoDb.query(queryRequest);
+            // Map reserved keyword 'timestamp' to an alias
+            Map<String, String> expressionNames = new HashMap<>();
+            expressionNames.put("#ts", "timestamp");
 
-                for (Map<String, AttributeValue> item : response.items()) {
-                    // Ensure attributes exist before parsing
-                    if (item.containsKey("workloadType") && item.containsKey("actualCost") && item.containsKey("params")) {
-                        String type = item.get("workloadType").s();
-                        long actualCost = Long.parseLong(item.get("actualCost").n());
-                        String params = item.get("params").s();
+            // Safe Scan with time filter to save bandwidth
+            ScanRequest scanRequest = ScanRequest.builder()
+                    .tableName(TABLE_NAME)
+                    .filterExpression("#ts > :lastTime")
+                    .expressionAttributeNames(expressionNames)
+                    .expressionAttributeValues(expressionValues)
+                    .build();
 
-                        if ("grayscott".equals(type) || "fractals".equals(type)) {
-                            updateMathModel(type, params, actualCost);
-                        } else if ("dna".equals(type)) {
-                            // DNA is unpredictable due to early exits, exact match caching is preferred
-                            LoadBalancer.dnaExactCache.put(params, (double) actualCost);
-                        }
+            ScanResponse response = dynamoDb.scan(scanRequest);
+
+            for (Map<String, AttributeValue> item : response.items()) {
+                // Ensure attributes exist before parsing
+                if (item.containsKey("workloadType") && item.containsKey("actualCost") && item.containsKey("params")) {
+                    String type = item.get("workloadType").s();
+                    long actualCost = Long.parseLong(item.get("actualCost").n());
+                    String params = item.get("params").s();
+
+                    if ("grayscott".equals(type) || "fractals".equals(type)) {
+                        updateMathModel(type, params, actualCost);
+                    } else if ("dna".equals(type)) {
+                        // DNA is unpredictable due to early exits, exact match caching is preferred
+                        LoadBalancer.dnaExactCache.put(params, (double) actualCost);
                     }
                 }
             }
-            lastPollTime = currentPollTime;
+            // Update timestamp for next 30s cycle
+            this.lastPollTime = currentPollTime;
             LOGGER.info("Successfully updated Load Balancer heuristics cache.");
 
         } catch (Exception e) {
@@ -136,7 +137,9 @@ public class MSSPoller implements Runnable {
         return defaultValue;
     }
 
-    // Extract String URL parameter
+    /**
+     * Parse String URL parameter
+     */
     private String extractStringParam(String query, String paramName, String defaultValue) {
         if (query == null) return defaultValue;
         
