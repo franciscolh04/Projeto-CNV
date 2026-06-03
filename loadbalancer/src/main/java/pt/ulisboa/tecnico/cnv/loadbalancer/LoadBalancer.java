@@ -19,9 +19,14 @@ import java.util.logging.Level;
 public class LoadBalancer {
     private static final Logger LOGGER = Logger.getLogger(LoadBalancer.class.getName());
     
+    // Tracks currently active and healthy EC2 worker nodes
     public static final ConcurrentHashMap<String, WorkerNode> activeWorkers = new ConcurrentHashMap<>();
 
-    public static final ConcurrentHashMap<String, Integer> metricsModelCache = new ConcurrentHashMap<>();
+    // EMA Cache for mathematical workloads (Gray-Scott and Fractals) - Stores Beta coefficient
+    public static final ConcurrentHashMap<String, Double> metricsModelCache = new ConcurrentHashMap<>();
+    
+    // Exact Match Cache for unpredictable workloads (DNA) - Stores exact historical cost
+    public static final ConcurrentHashMap<String, Double> dnaExactCache = new ConcurrentHashMap<>();
 
     private static final int LB_PORT = 8000;
 
@@ -36,6 +41,11 @@ public class LoadBalancer {
         }
         masterIp = args[0];
 
+        // --- Initialize Baseline Heuristics ---
+        // So the LB doesn't divide by zero or fail before the MSSPoller completes its first 30s cycle
+        metricsModelCache.put("fractals", 2579.23);
+        metricsModelCache.put("grayscott", 339.49);
+        
         try {
             System.out.println("Starting Load Balancer on port " + LB_PORT);
             startHttpServer();

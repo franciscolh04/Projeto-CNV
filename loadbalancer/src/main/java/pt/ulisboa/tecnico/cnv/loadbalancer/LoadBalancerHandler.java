@@ -8,6 +8,7 @@ import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.lambda.LambdaClient;
 import software.amazon.awssdk.services.lambda.model.InvokeRequest;
 import software.amazon.awssdk.services.lambda.model.InvokeResponse;
+import software.amazon.awssdk.regions.Region;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -42,7 +43,10 @@ public class LoadBalancerHandler implements HttpHandler {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MS))
                 .build();
-        this.awsLambda = LambdaClient.builder().credentialsProvider(EnvironmentVariableCredentialsProvider.create()).build();
+        this.awsLambda = LambdaClient.builder()
+                .region(Region.US_EAST_1)
+                .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
+                .build();
     }
 
     @Override
@@ -182,23 +186,23 @@ public class LoadBalancerHandler implements HttpHandler {
                 .build();
         
         LOGGER.info("Forwarding request to worker " + workerIp + ": " + truncateForLogging(url));
-        HttpResponse<String> response = httpClient.send(request, 
-                HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         
         response.headers().firstValue("X-Request-Cost").ifPresent(costStr -> {
             try {
-                // Divide raw cost by 1 million to convert to "units" for our model, ensuring at least 1 unit, preventing integer overflow, and store in cache
                 long rawCost = Long.parseLong(costStr);
-                int realCost = (int) Math.max(1L, rawCost / 1_000_000L);
-                
                 String cacheKey = path; 
                 if (query != null && !query.isEmpty()) {
                      cacheKey += "?" + query;
                 }
                 
-                LoadBalancer.metricsModelCache.put(cacheKey, realCost);
-                LOGGER.info("[Metrics] Learned new cost for " + truncateForLogging(cacheKey) + " -> " + rawCost + " ops -> " + realCost + " units");
+                // Only cache exact string matches for DNA workloads due to unpredictable early exits.
+                // Math models (fractals, grayscott) are updated asynchronously by MSSPoller via DynamoDB.
+                if (path.contains("dna")) {
+                    LoadBalancer.dnaExactCache.put(cacheKey, (double) rawCost);
+                }
                 
+                LOGGER.info("[Metrics] Verified cost for " + truncateForLogging(cacheKey) + " -> " + rawCost);
             } catch (NumberFormatException e) {
                 LOGGER.warning("[LB] Invalid X-Request-Cost header");
             }
@@ -266,9 +270,7 @@ public class LoadBalancerHandler implements HttpHandler {
    }
 
     /**
-     * Estimates the work required for a request based on its path and query parameters.
-     * @param exchange The HTTP exchange object.
-     * @return The estimated work.
+     * Estimates the work required for a request dynamically using continuous learning coefficients.
      */
     private int estimateWork(HttpExchange exchange) {
         String path = exchange.getRequestURI().getPath();
@@ -279,45 +281,50 @@ public class LoadBalancerHandler implements HttpHandler {
              cacheKey += "?" + query;
         }
 
-        Integer learnedCost = LoadBalancer.metricsModelCache.get(cacheKey);
-        if (learnedCost != null) {
-            LOGGER.info("[Estimation] Cache hit for " + truncateForLogging(cacheKey) + ". Cost: " + learnedCost);
-            return learnedCost;
-        }
-
-        // --- HEURISTIC MODEL ---
         try {
             java.util.Map<String, String> params = parseQuery(query);
 
-            if (path.contains("fractal")) {
+            if (path.contains("dna")) {
+                // Exact match check for chaotic DNA workloads
+                Double cachedCost = LoadBalancer.dnaExactCache.get(cacheKey);
+                if (cachedCost != null) {
+                    LOGGER.info("[Estimation] DNA exact match hit. Cost: " + cachedCost);
+                    return (int) Math.max(1L, cachedCost.longValue() / 1_000_000L);
+                } else {
+                    String s1 = params.getOrDefault("seq1", "");
+                    String s2 = params.getOrDefault("seq2", "");
+                    long rawCost = (long) s1.length() * (long) s2.length() * 16L;
+                    int cost = (int) Math.max(1L, rawCost / 1_000_000L);
+                    LOGGER.info("[Estimation] DNA fallback heuristic -> Raw: " + rawCost + " Units: " + cost);
+                    return cost;
+                }
+            } else if (path.contains("fractal")) {
+                // Fetch dynamic EMA coefficient
+                Double beta = LoadBalancer.metricsModelCache.getOrDefault("fractals", 2579.23);
                 long w = Long.parseLong(params.getOrDefault("w", "1"));
                 long h = Long.parseLong(params.getOrDefault("h", "1"));
-                long rawCost = w * h * 1550L;
+                
+                long rawCost = (long) (beta * (w * h));
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation/Heuristic] FRACTAL " + truncateForLogging(cacheKey) + " -> Raw: " + rawCost + " Units: " + cost);
+                LOGGER.info("[Estimation] FRACTAL EMA (Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             } else if (path.contains("grayscott")) {
+                // Fetch dynamic EMA coefficient
+                Double beta = LoadBalancer.metricsModelCache.getOrDefault("grayscott", 339.49);
                 long s = Long.parseLong(params.getOrDefault("size", "1"));
                 long n = Long.parseLong(params.getOrDefault("maxIterations", "1"));
-                long rawCost = s * s * n * 273L;
+                
+                long rawCost = (long) (beta * (s * s * n));
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation/Heuristic] GRAYSCOTT " + truncateForLogging(cacheKey) + " -> Raw: " + rawCost + " Units: " + cost);
-                return cost;
-            } else if (path.contains("dna")) {
-                // seq lengths
-                String s1 = params.getOrDefault("seq1", "");
-                String s2 = params.getOrDefault("seq2", "");
-                long rawCost = (long) s1.length() * (long) s2.length() * 16L;
-                int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation/Heuristic] DNA " + truncateForLogging(cacheKey) + " -> Raw: " + rawCost + " Units: " + cost);
+                LOGGER.info("[Estimation] GRAYSCOTT EMA (Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             }
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "[Estimation] Error calculating heuristic", e);
+            LOGGER.log(Level.WARNING, "[Estimation] Error calculating mathematical heuristic", e);
         }
 
-        LOGGER.info("[Estimation] Unknown request " + truncateForLogging(cacheKey) + ". Using default.");
-        return 10; // 10 units = 10,000,000 instructions default
+        LOGGER.info("[Estimation] Unknown request. Using default units.");
+        return 10;
     }
 
     // Select worker with lowest weighted score combining CPU and work
