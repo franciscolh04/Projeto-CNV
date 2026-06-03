@@ -309,14 +309,20 @@ public class LoadBalancerHandler implements HttpHandler {
                 LOGGER.info("[Estimation] FRACTAL EMA (Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             } else if (path.contains("grayscott")) {
-                // Fetch dynamic EMA coefficient
-                Double beta = LoadBalancer.metricsModelCache.getOrDefault("grayscott", 339.49);
+                // Extract topological params for composite key
+                String seedMode = params.getOrDefault("seedMode", "center");
+                String stopOnExt = params.getOrDefault("stopOnExtinction", "false");
+                String modelKey = "grayscott_" + seedMode + "_" + stopOnExt;
+
+                // Fetch dynamic EMA coefficient for specific topology
+                Double beta = LoadBalancer.metricsModelCache.getOrDefault(modelKey, 365.30);
+                
                 long s = Long.parseLong(params.getOrDefault("size", "1"));
                 long n = Long.parseLong(params.getOrDefault("maxIterations", "1"));
                 
                 long rawCost = (long) (beta * (s * s * n));
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                LOGGER.info("[Estimation] GRAYSCOTT EMA (Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
+                LOGGER.info("[Estimation] GRAYSCOTT EMA (" + modelKey + " Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
                 return cost;
             }
         } catch (Exception e) {

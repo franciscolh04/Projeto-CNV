@@ -44,7 +44,12 @@ public class LoadBalancer {
         // --- Initialize Baseline Heuristics ---
         // So the LB doesn't divide by zero or fail before the MSSPoller completes its first 30s cycle
         metricsModelCache.put("fractals", 2579.23);
-        metricsModelCache.put("grayscott", 339.49);
+        metricsModelCache.put("grayscott_center_false", 365.29);
+        metricsModelCache.put("grayscott_center_true", 365.29);
+        metricsModelCache.put("grayscott_ring_false", 365.60);
+        metricsModelCache.put("grayscott_ring_true", 210.13);
+        metricsModelCache.put("grayscott_stripe_false", 365.31);
+        metricsModelCache.put("grayscott_stripe_true", 365.31);
         
         try {
             System.out.println("Starting Load Balancer on port " + LB_PORT);

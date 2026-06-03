@@ -85,28 +85,35 @@ public class MSSPoller implements Runnable {
      */
     private void updateMathModel(String operation, String params, long actualCost) {
         long workUnits = 1;
+        String cacheKey = operation; // Default key
         
         if ("grayscott".equals(operation)) {
             long size = extractParam(params, "size", 256);
             long iters = extractParam(params, "maxIterations", 1000);
             workUnits = (size * size) * iters;
+            
+            // Build composite key for topological partitioning
+            String seedMode = extractStringParam(params, "seedMode", "center");
+            String stopOnExt = extractStringParam(params, "stopOnExtinction", "false");
+            cacheKey = "grayscott_" + seedMode + "_" + stopOnExt;
+            
         } else if ("fractals".equals(operation)) {
             long w = extractParam(params, "w", 400);
             long h = extractParam(params, "h", 300);
             workUnits = w * h;
         }
 
-        // 1. Calculate observed cost per work unit (Beta)
+        // Calculate observed cost per work unit (Beta)
         double observedCostPerUnit = (double) actualCost / workUnits;
         
-        // 2. Fetch current EMA from cache (default to observed if empty)
-        double currentEMA = LoadBalancer.metricsModelCache.getOrDefault(operation, observedCostPerUnit);
+        // Fetch current EMA from cache (default to observed if empty)
+        double currentEMA = LoadBalancer.metricsModelCache.getOrDefault(cacheKey, observedCostPerUnit);
         
-        // 3. Apply Exponential Moving Average formula
+        // Apply Exponential Moving Average formula
         double newEMA = (ALPHA * observedCostPerUnit) + ((1.0 - ALPHA) * currentEMA);
         
-        // 4. Update the thread-safe cache
-        LoadBalancer.metricsModelCache.put(operation, newEMA);
+        // Update cache with specific topological key
+        LoadBalancer.metricsModelCache.put(cacheKey, newEMA);
     }
 
     /**
@@ -124,6 +131,20 @@ public class MSSPoller implements Runnable {
                 } catch (NumberFormatException e) {
                     return defaultValue;
                 }
+            }
+        }
+        return defaultValue;
+    }
+
+    // Extract String URL parameter
+    private String extractStringParam(String query, String paramName, String defaultValue) {
+        if (query == null) return defaultValue;
+        
+        String[] pairs = query.split("&");
+        for (String pair : pairs) {
+            String[] kv = pair.split("=");
+            if (kv.length == 2 && kv[0].equals(paramName)) {
+                return kv[1];
             }
         }
         return defaultValue;
