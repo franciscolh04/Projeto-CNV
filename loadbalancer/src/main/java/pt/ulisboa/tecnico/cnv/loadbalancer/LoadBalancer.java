@@ -28,6 +28,16 @@ public class LoadBalancer {
     // Exact Match Cache for unpredictable workloads (DNA) - Stores exact historical cost
     public static final ConcurrentHashMap<String, Double> dnaExactCache = new ConcurrentHashMap<>();
 
+    // LRU Cache for the last 1000 EXACT requests (Maintains recency automatically)
+    public static final java.util.Map<String, Long> recentExactCache = java.util.Collections.synchronizedMap(
+        new java.util.LinkedHashMap<String, Long>(1000, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(java.util.Map.Entry<String, Long> eldest) {
+                return size() > 1000;
+            }
+        }
+    );
+
     private static final int LB_PORT = 8000;
 
     private static String masterIp = "127.0.0.1";

@@ -191,18 +191,34 @@ public class LoadBalancerHandler implements HttpHandler {
         response.headers().firstValue("X-Request-Cost").ifPresent(costStr -> {
             try {
                 long rawCost = Long.parseLong(costStr);
-                String cacheKey = path; 
+                
+                String fullUrl = path; 
                 if (query != null && !query.isEmpty()) {
-                     cacheKey += "?" + query;
+                     fullUrl += "?" + query;
                 }
                 
-                // Only cache exact string matches for DNA workloads due to unpredictable early exits.
-                // Math models (fractals, grayscott) are updated asynchronously by MSSPoller via DynamoDB.
-                if (path.contains("dna")) {
-                    LoadBalancer.dnaExactCache.put(cacheKey, (double) rawCost);
-                }
+                // Save recent EXACT MATCH
+                LoadBalancer.recentExactCache.put(fullUrl, rawCost);
                 
-                LOGGER.info("[Metrics] Verified cost for " + truncateForLogging(cacheKey) + " -> " + rawCost);
+                // Update local Beta (EMA) immediately
+                try {
+                    java.util.Map<String, String> p = parseQuery(query);
+                    if (path.contains("grayscott")) {
+                        String seed = p.getOrDefault("seedMode", "center");
+                        String ext = p.getOrDefault("stopOnExtinction", "false");
+                        long s = Long.parseLong(p.getOrDefault("size", "256"));
+                        long n = Long.parseLong(p.getOrDefault("maxIterations", "1000"));
+                        updateLocalEMA("grayscott_" + seed + "_" + ext, rawCost, (s * s) * n);
+                    } else if (path.contains("fractals")) {
+                        long w = Long.parseLong(p.getOrDefault("w", "400"));
+                        long h = Long.parseLong(p.getOrDefault("h", "300"));
+                        updateLocalEMA("fractals", rawCost, w * h);
+                    }
+                } catch (Exception e) {
+                    LOGGER.warning("[Metrics] Error in Fast Loop: " + e.getMessage());
+                }
+
+                LOGGER.info("[Metrics] Fast Loop registered cost for " + truncateForLogging(fullUrl) + " -> " + rawCost);
             } catch (NumberFormatException e) {
                 LOGGER.warning("[LB] Invalid X-Request-Cost header");
             }
@@ -269,6 +285,16 @@ public class LoadBalancerHandler implements HttpHandler {
         }
    }
 
+    // Fast Loop EMA update for accurate recent approximations
+    private void updateLocalEMA(String key, long actualCost, long workUnits) {
+        if (workUnits <= 0) return;
+        double observedCost = (double) actualCost / workUnits;
+        double currentEMA = LoadBalancer.metricsModelCache.getOrDefault(key, observedCost);
+        // Alpha = 0.2
+        double newEMA = (0.2 * observedCost) + (0.8 * currentEMA);
+        LoadBalancer.metricsModelCache.put(key, newEMA);
+    }
+
     /**
      * Estimates the work required for a request dynamically using continuous learning coefficients.
      */
@@ -281,6 +307,14 @@ public class LoadBalancerHandler implements HttpHandler {
              cacheKey += "?" + query;
         }
 
+        // Check recent EXACT MATCH cache first for the full URL (including query) to capture recency and unpredictability
+        Long exactRecentCost = LoadBalancer.recentExactCache.get(cacheKey);
+        if (exactRecentCost != null) {
+            LOGGER.info("[Estimation] EXACT MATCH RECENTE hit. Cost: " + exactRecentCost);
+            return (int) Math.max(1L, exactRecentCost / 1_000_000L);
+        }
+        
+        // If no recent exact match, proceed with heuristics based on dynamic EMA coefficients
         try {
             java.util.Map<String, String> params = parseQuery(query);
 
