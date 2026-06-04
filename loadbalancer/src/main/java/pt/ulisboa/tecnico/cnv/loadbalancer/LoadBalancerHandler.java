@@ -5,7 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
-import software.amazon.awssdk.services.lambda.LambdaClient;
+import software.amazon.awssdk.services.lambda.LambdaAsyncClient;
 import software.amazon.awssdk.services.lambda.model.InvokeRequest;
 import software.amazon.awssdk.services.lambda.model.InvokeResponse;
 import software.amazon.awssdk.regions.Region;
@@ -21,6 +21,12 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.logging.Logger;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 /**
@@ -31,100 +37,132 @@ public class LoadBalancerHandler implements HttpHandler {
     private static final long CONNECT_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 120000;
     private static final int WORKER_PORT = 8000;
-    private static final int MAX_RETRIES = 1;
-    private static final int FAAS_THRESHOLD = 2_000; // TODO: Tune this
-    private static final double BUSY_THRESHOLD = 0.60;
+    private static final int FAAS_THRESHOLD = 1_500; // TODO: Tune this
+    private static final int QUEUE_SIZE_THRESHOLD = 5;
+    private static final double HARD_LIMIT_SCORE = 0.90;
     
     private final HttpClient httpClient;
 
-    private final LambdaClient awsLambda;
+    private final LambdaAsyncClient awsLambda;
+
+    public static final PriorityBlockingQueue<Job> pendingQueue = new PriorityBlockingQueue<>();
+
+    private final ExecutorService dispatcherLoop = Executors.newSingleThreadExecutor();
 
     public LoadBalancerHandler() {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MS))
                 .build();
-        this.awsLambda = LambdaClient.builder()
+        this.awsLambda = LambdaAsyncClient.builder()
                 .region(Region.US_EAST_1)
                 .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
                 .build();
     }
-
+    
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         String query = exchange.getRequestURI().getQuery();
         String path = exchange.getRequestURI().getPath();
-        Boolean faasSuccess = true;
 
         int estimatedWork = estimateWork(exchange);
 
-        // Retry logic: try current worker, then one more if it fails
-        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-            WorkerNode targetNode = getSuitableServer();
-            if (targetNode == null) {
-                if (faasSuccess && invokeFunction(exchange)) {
-                    LOGGER.info("[LB] FaaS fallback succeeded for " + truncateForLogging(path));
-                    return;
-                }
+        boolean isSmallRequest = estimatedWork <= FAAS_THRESHOLD;
 
-                sendResponse(exchange, 503, "Service Unavailable: No workers alive.");
+        // For small requests, if the queue is long, try to offload to FaaS before enqueuing
+        if (pendingQueue.size() > QUEUE_SIZE_THRESHOLD) {
+            if (LoadBalancer.autoScaler != null) {
+                LoadBalancer.autoScaler.requestEvaluation();
+            }
+            if (isSmallRequest) {
+                invokeFunctionAsync(exchange, path, query, estimatedWork);
                 return;
-            }
-
-            double currentInstanceLoad = targetNode.getRelativeWork(); 
-            boolean isInstanceBusy = currentInstanceLoad > BUSY_THRESHOLD; 
-
-            boolean isSmallRequest = estimatedWork <= FAAS_THRESHOLD;
-            boolean shouldOffloadToFaas = isSmallRequest && isInstanceBusy;
-
-            // Small requests can be diverted to FaaS when the selected worker is already busy.
-            // Large requests stay on EC2 so they continue to reserve worker capacity for heavy jobs.
-            if (faasSuccess && shouldOffloadToFaas) {
-                faasSuccess = invokeFunction(exchange);
-                if (faasSuccess) {
-                    LOGGER.info("[LB] FaaS invocation succeeded for " + truncateForLogging(path));
-                    return;
-                } else {
-                    faasSuccess = false;
-                    LOGGER.warning("[LB] FaaS invocation failed, falling back to worker nodes.");
-                }
-            }
-
-            targetNode.getWork().addAndGet(estimatedWork);
-            String workerIp = targetNode.getIp();
-
-            try {
-                String responseBody = forwardRequest(workerIp, path, query);
-                
-                // Check if worker still exists in activeWorkers (didn't timeout/fail)
-                if (LoadBalancer.activeWorkers.containsKey(workerIp)) {
-                    sendResponse(exchange, 200, responseBody);
-                    return;
-                } else {
-                    // Worker disappeared during processing, will retry
-                    LOGGER.log(Level.WARNING, "Worker " + workerIp + " became unavailable during request");
-                }
-                
-            } catch (java.net.http.HttpTimeoutException e) {
-                LOGGER.log(Level.WARNING, "Worker " + workerIp + " request timeout on attempt " + (attempt + 1) + " - may indicate slow/stuck workload", e);
-                // Will retry on next iteration
-                
-            } catch (java.net.ConnectException e) {
-                LOGGER.log(Level.WARNING, "Worker " + workerIp + " connection failed on attempt " + (attempt + 1), e);
-                // Will retry on next iteration
-                
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Worker " + workerIp + " error: " + e.getMessage(), e);
-                // Will retry on next iteration
-                
-            } finally {
-                targetNode.getWork().addAndGet(-estimatedWork);
             }
         }
 
-        // All retries exhausted
-        sendResponse(exchange, 502, "Bad Gateway: Unable to reach any worker node.");
+        enqueueJob(exchange, path, query, estimatedWork);
     }
 
+    // Método extraído para enfileirar o Job caso falhe o FaaS ou seja um request grande
+    private void enqueueJob(HttpExchange exchange, String path, String query, int estimatedWork) {
+        Job job = new Job(exchange, path, query, estimatedWork);
+
+        job.futureResult.whenCompleteAsync((responseBody, throwable) -> {
+            try {
+                if (throwable != null) {
+                    LOGGER.log(Level.SEVERE, "Error processing job", throwable);
+                    sendResponse(exchange, 502, "Bad Gateway: " + throwable.getMessage());
+                } else {
+                    sendResponse(exchange, 200, responseBody);
+                }
+            } catch (IOException e) {
+                LOGGER.log(Level.SEVERE, "Error sending response for Job", e);
+            }
+        }, Executors.newCachedThreadPool());
+
+        // Adds the job to the pending queue and tries to dispatch immediately
+        pendingQueue.add(job);
+        LOGGER.info("[LB] Received request: " + exchange.getRequestMethod() + " " + truncateForLogging(exchange.getRequestURI().toString()) + 
+            " | Estimated Work: " + job.estimatedWork + " units | Queue Size: " + pendingQueue.size());
+
+        triggerQueueProcessing();
+    }
+
+
+    /*
+    * Triggered when a new worker registers. Attempts to dispatch jobs from the pending queue.
+     */    
+    public void triggerQueueProcessing() {
+        dispatcherLoop.submit(this::processQueue);
+        LOGGER.fine("[LB] Triggered queue processing. Current queue size: " + pendingQueue.size());
+    }
+    /*
+    * Tries to dispatch jobs from the pending queue to suitable workers while respecting capacity limits.
+     * Uses a loop to continuously check the head of the queue and dispatch if possible.
+     */
+    private void processQueue() {
+        while (true) {
+            Job job = pendingQueue.poll();
+            if (job == null) break;
+
+            WorkerNode targetNode = getSuitableServer(job.estimatedWork); 
+            if (targetNode == null) {
+                // Re-enqueue the job for later processing
+                pendingQueue.add(job);
+                break;
+            }
+            
+            try {
+                targetNode.getWork().addAndGet(job.estimatedWork);
+
+                forwardRequestAsync(targetNode.getIp(), job.path, job.query)
+                        .whenComplete((response, throwable) -> {
+                            // O callback é executado quando o pedido termina
+                            targetNode.getWork().addAndGet(-job.estimatedWork);
+
+                            if (throwable != null || (response != null && response.statusCode() >= 500)) {
+                                if (job.retries < job.MAX_RETRIES) {
+                                    job.retries++;
+                                    pendingQueue.add(job); 
+                                } else {
+                                    job.futureResult.completeExceptionally(throwable);
+                                }
+                            } else if (response.statusCode() == 200) {
+                                job.futureResult.complete(response.body());
+                            } else {
+                                job.futureResult.completeExceptionally(new RuntimeException("Status: " + response.statusCode()));
+                            }
+
+                            // Trigger another round of queue processing in case there are more jobs that can be dispatched now
+                            triggerQueueProcessing(); 
+                        });
+            } catch (Exception e) {
+                targetNode.getWork().addAndGet(-job.estimatedWork);
+                job.futureResult.completeExceptionally(e);
+                // Ensure we trigger queue processing to handle the next jobs
+                triggerQueueProcessing(); 
+            }
+        }
+    }
     /**
      * Truncates a string for logging to prevent log pollution.
      * Returns the full string if <= MAX_LENGTH, otherwise returns first MAX_LENGTH chars + "..."
@@ -166,15 +204,13 @@ public class LoadBalancerHandler implements HttpHandler {
         return encoded.toString();
     }
 
-    /**
-     * Forwards request to worker node with separate connect and read timeouts.
-     * Connect timeout: fail fast if worker is unreachable
-     * Read timeout: allow heavy workloads to complete processing
+   /**
+     * Forwards request to worker node asynchronously.
+     * Extracts X-Request-Cost header to update the metrics model cache.
      */
-    private String forwardRequest(String workerIp, String path, String query) throws Exception {
+    private CompletableFuture<HttpResponse<String>> forwardRequestAsync(String workerIp, String path, String query) {
         String url = "http://" + workerIp + ":" + WORKER_PORT + path;
         if (query != null && !query.isEmpty()) {
-            // Properly encode query parameters to handle special characters (colons, angle brackets, etc.)
             String encodedQuery = encodeQueryString(query);
             url += "?" + encodedQuery;
         }
@@ -186,51 +222,53 @@ public class LoadBalancerHandler implements HttpHandler {
                 .build();
         
         LOGGER.info("Forwarding request to worker " + workerIp + ": " + truncateForLogging(url));
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         
-        response.headers().firstValue("X-Request-Cost").ifPresent(costStr -> {
-            try {
-                long rawCost = Long.parseLong(costStr);
-                
-                String fullUrl = path; 
-                if (query != null && !query.isEmpty()) {
-                     fullUrl += "?" + query;
-                }
-                
-                // Save recent EXACT MATCH
-                LoadBalancer.recentExactCache.put(fullUrl, rawCost);
-                
-                // Update local Beta (EMA) immediately
-                try {
-                    java.util.Map<String, String> p = parseQuery(query);
-                    if (path.contains("grayscott")) {
-                        String seed = p.getOrDefault("seedMode", "center");
-                        String ext = p.getOrDefault("stopOnExtinction", "false");
-                        long s = Long.parseLong(p.getOrDefault("size", "256"));
-                        long n = Long.parseLong(p.getOrDefault("maxIterations", "1000"));
-                        updateLocalEMA("grayscott_" + seed + "_" + ext, rawCost, (s * s) * n);
-                    } else if (path.contains("fractals")) {
-                        long w = Long.parseLong(p.getOrDefault("w", "400"));
-                        long h = Long.parseLong(p.getOrDefault("h", "300"));
-                        updateLocalEMA("fractals", rawCost, w * h);
-                    }
-                } catch (Exception e) {
-                    LOGGER.warning("[Metrics] Error in Fast Loop: " + e.getMessage());
-                }
+        // Returns the future to allow handling response
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .whenComplete((response, throwable) -> {
+                    // Metrics Learning: extracts X-Request-Cost header and updates the cache
+                    if (throwable == null && response.statusCode() == 200) {
+                        response.headers().firstValue("X-Request-Cost").ifPresent(costStr -> {
+                            try {
+                                long rawCost = Long.parseLong(costStr);
+                                
+                                String fullUrl = path; 
+                                if (query != null && !query.isEmpty()) {
+                                    fullUrl += "?" + query;
+                                }
+                                
+                                // Save recent EXACT MATCH
+                                LoadBalancer.recentExactCache.put(fullUrl, rawCost);
+                                
+                                // Update local Beta (EMA) immediately
+                                try {
+                                    java.util.Map<String, String> p = parseQuery(query);
+                                    if (path.contains("grayscott")) {
+                                        String seed = p.getOrDefault("seedMode", "center");
+                                        String ext = p.getOrDefault("stopOnExtinction", "false");
+                                        long s = Long.parseLong(p.getOrDefault("size", "256"));
+                                        long n = Long.parseLong(p.getOrDefault("maxIterations", "1000"));
+                                        updateLocalEMA("grayscott_" + seed + "_" + ext, rawCost, (s * s) * n);
+                                    } else if (path.contains("fractals")) {
+                                        long w = Long.parseLong(p.getOrDefault("w", "400"));
+                                        long h = Long.parseLong(p.getOrDefault("h", "300"));
+                                        updateLocalEMA("fractals", rawCost, w * h);
+                                    }
+                                } catch (Exception e) {
+                                    LOGGER.warning("[Metrics] Error in Fast Loop: " + e.getMessage());
+                                }
 
-                LOGGER.info("[Metrics] Fast Loop registered cost for " + truncateForLogging(fullUrl) + " -> " + rawCost);
-            } catch (NumberFormatException e) {
-                LOGGER.warning("[LB] Invalid X-Request-Cost header");
-            }
-        });
-        
-        return response.body();
+                                LOGGER.info("[Metrics] Fast Loop registered cost for " + truncateForLogging(fullUrl) + " -> " + rawCost);
+                            } catch (NumberFormatException e) {
+                                LOGGER.warning("[LB] Invalid X-Request-Cost header");
+                            }
+                        });
+                    }
+                });
     }
 
-    private Boolean invokeFunction(HttpExchange exchange) {
+    private void invokeFunctionAsync(HttpExchange exchange, String path, String query, int estimatedWork) {
         String functionName="";
-        String query = exchange.getRequestURI().getQuery();
-        String path = exchange.getRequestURI().getPath();
         String json="{}";
 
         // TODO: Move to an auxiliar Function ?
@@ -262,28 +300,32 @@ public class LoadBalancerHandler implements HttpHandler {
                 json=String.format("{\"seq1\":\"%s\",\"seq2\":\"%s\",\"minLength\":\"%s\",\"stopOnFirst\":\"%s\"}", s1, s2, minLengthParam, stopOnFirst);
             }
 
-            LOGGER.info("[LB] Invoking Lambda function " + functionName + " with payload: " + truncateForLogging(json));
+            final String finalFunctionName = functionName;
+            LOGGER.info("[LB] Invoking Lambda function " + finalFunctionName + " with payload: " + truncateForLogging(json));
             SdkBytes payload = SdkBytes.fromUtf8String(json) ;
-            InvokeRequest request = InvokeRequest.builder().functionName(functionName).payload(payload).build();
+            InvokeRequest request = InvokeRequest.builder().functionName(finalFunctionName).payload(payload).build();
 
-            InvokeResponse res = awsLambda.invoke(request);
+            awsLambda.invoke(request).whenComplete((res, throwable) -> {
+                if (throwable != null || res.functionError() != null) {
+                    LOGGER.log(Level.SEVERE, "[FaaS Error] Fallback to Queue.");
+                    enqueueJob(exchange, path, query, estimatedWork);
+                    return;
+                }
 
-            if (res.functionError() != null) {
-                String errorPayload = res.payload().asUtf8String();
-                LOGGER.log(Level.SEVERE, "[FaaS Error] " + res.functionError() + " -> " + errorPayload);     
-                return false;
-            }
-
-            String responseBody = res.payload().asUtf8String();
-            LOGGER.info("[LB] Lambda function " + functionName + " invocation succeeded with response: " + truncateForLogging(responseBody));
-            sendResponse(exchange, 200, responseBody);     
-            return true;
+                try {
+                    String responseBody = res.payload().asUtf8String();
+                    LOGGER.info("[LB] Lambda function " + finalFunctionName + " invocation succeeded.");
+                    sendResponse(exchange, 200, responseBody);
+                } catch (Exception e) {
+                    LOGGER.log(Level.SEVERE, "Error sending Lambda response", e);
+                }
+            });
 
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error invoking Lambda function", e);
-            return false;
+            LOGGER.log(Level.SEVERE, "Error preparing Lambda function. Fallback to queue.", e);
+            enqueueJob(exchange, path, query, estimatedWork);
         }
-   }
+    }
 
     // Fast Loop EMA update for accurate recent approximations
     private void updateLocalEMA(String key, long actualCost, long workUnits) {
@@ -301,6 +343,7 @@ public class LoadBalancerHandler implements HttpHandler {
     private int estimateWork(HttpExchange exchange) {
         String path = exchange.getRequestURI().getPath();
         String query = exchange.getRequestURI().getQuery();
+        final int maxAllowedEstimate = (int) (HARD_LIMIT_SCORE*AutoScaler.getAverageNodeCapacity());
         
         String cacheKey = path;
         if (query != null && !query.isEmpty()) {
@@ -311,7 +354,7 @@ public class LoadBalancerHandler implements HttpHandler {
         Long exactRecentCost = LoadBalancer.recentExactCache.get(cacheKey);
         if (exactRecentCost != null) {
             LOGGER.info("[Estimation] EXACT MATCH RECENTE hit. Cost: " + exactRecentCost);
-            return (int) Math.max(1L, exactRecentCost / 1_000_000L);
+            return (int) Math.min(maxAllowedEstimate, Math.max(1L, exactRecentCost / 1_000_000L));
         }
         
         // If no recent exact match, proceed with heuristics based on dynamic EMA coefficients
@@ -341,7 +384,7 @@ public class LoadBalancerHandler implements HttpHandler {
                 long rawCost = (long) (beta * (w * h));
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
                 LOGGER.info("[Estimation] FRACTAL EMA (Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
-                return cost;
+                return Math.min(cost, maxAllowedEstimate);
             } else if (path.contains("grayscott")) {
                 // Extract topological params for composite key
                 String seedMode = params.getOrDefault("seedMode", "center");
@@ -357,7 +400,7 @@ public class LoadBalancerHandler implements HttpHandler {
                 long rawCost = (long) (beta * (s * s * n));
                 int cost = (int) Math.max(1L, rawCost / 1_000_000L);
                 LOGGER.info("[Estimation] GRAYSCOTT EMA (" + modelKey + " Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
-                return cost;
+                return Math.min(cost, maxAllowedEstimate);
             }
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "[Estimation] Error calculating mathematical heuristic", e);
@@ -367,40 +410,64 @@ public class LoadBalancerHandler implements HttpHandler {
         return 10;
     }
 
-    // Select worker with lowest weighted score combining CPU and work
-    private WorkerNode getSuitableServer() {
+    /*
+    * Select worker with Highest weighted score combining CPU and work where 
+    * the work fits without exceeding a hard limit. Returns null if no suitable worker is found.
+    */
+    private WorkerNode getSuitableServer(int requiredWork) {
         WorkerNode bestNode = null;
-        double minScore = Double.MAX_VALUE;
+        WorkerNode fallbackNode = null;
         final double WEIGHT_CPU = 0.4, WEIGHT_WORK = 0.6;
+        double maxScoreUnderLimit = -1.0;
+        double minWorkForFallback = Double.MAX_VALUE;
 
         for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
             // Normalize CPU from 0-100 to 0-1
             double cpuNormalized = node.getCpuUtilization() / 100.0;
             
-            // Relative work: current work / max capacity
-            double relativeWork = node.getRelativeWork();
+            // Relative work: current work + new / max capacity
+            double projectedRelativeWork = (double) (node.getWork().get() + requiredWork) / node.getMaxCapacity();
             
-            // Weighted score
-            double score = (WEIGHT_CPU * cpuNormalized) + (WEIGHT_WORK * relativeWork);
-            
-            LOGGER.fine("[LB] Worker " + node.getIp() + " score=" + String.format("%.3f", score) + 
+            LOGGER.fine("[LB] Worker " + node.getIp() + " score=" + String.format("%.3f", projectedRelativeWork) + 
                 " (cpu=" + String.format("%.1f", node.getCpuUtilization()) + "%, work=" + 
                 node.getWork().get() + "/" + node.getMaxCapacity() + ")");
+
+            // Weighted score
+            double projectedScore = (WEIGHT_CPU * cpuNormalized) + (WEIGHT_WORK * projectedRelativeWork);
             
-            if (score < minScore) {
-                minScore = score;
-                bestNode = node;
+            // 1. Primary Routing (Soft Limit <= 90%)
+            if (projectedScore <= HARD_LIMIT_SCORE) {
+                if (projectedScore > maxScoreUnderLimit) {
+                    maxScoreUnderLimit = projectedScore;
+                    bestNode = node;
+                }
+            } 
+            // 2. Fallback / Best-Effort
+            else if (projectedRelativeWork <= 1.0) {
+                if (projectedRelativeWork < minWorkForFallback) {
+                    minWorkForFallback = projectedRelativeWork;
+                    fallbackNode = node;
+                }
             }
         }
-        
+    
+        // BestNode (The one with the highest score that is still under the hard limit) 
         if (bestNode != null) {
-            LOGGER.info("[LB] Selected worker " + bestNode.getIp() + " with score " + 
-                String.format("%.3f", minScore));
-        } else {
-            LOGGER.warning("[LB] No suitable worker found");
+            LOGGER.info("[LB] Selected primary worker " + bestNode.getIp() + 
+                " (score: " + String.format("%.3f", maxScoreUnderLimit) + ")");
+            return bestNode;
+        } 
+        // FallbackNode (The one with enough capacity to fit the job)
+        else if (fallbackNode != null) {
+            LOGGER.warning("[LB] Soft limit exceeded. Selected fallback worker " + fallbackNode.getIp() + 
+                " (projected work: " + String.format("%.1f%%", minWorkForFallback * 100) + ")");
+            return fallbackNode;
         }
         
-        return bestNode;
+        // 3. Queue & Scale Out
+        LOGGER.warning("[LB] No suitable worker found (all exceeded 100% capacity). Job stays in queue.");
+        LoadBalancer.autoScaler.requestEvaluation();
+        return null;
     }
 
     /**

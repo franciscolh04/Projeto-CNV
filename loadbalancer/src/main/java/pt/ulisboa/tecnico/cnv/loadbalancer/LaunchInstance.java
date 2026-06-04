@@ -8,6 +8,11 @@ import software.amazon.awssdk.services.ec2.model.*;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
@@ -32,6 +37,8 @@ public class LaunchInstance {
 
     private final Ec2Client ec2Client;
 
+    private final ScheduledExecutorService watchdogScheduler = Executors.newScheduledThreadPool(2);
+
     public LaunchInstance() {
 
         if (AMI_ID == null || SEC_GROUP_ID == null) {
@@ -45,7 +52,8 @@ public class LaunchInstance {
                 .build();
     }
 
-    public String launchInstance(String masterIP) {
+    public List<String> launchInstances(String masterIP, int count) {
+        List<String> launchedInstanceIds = new java.util.ArrayList<>();
         try {
 
             LOGGER.info("[LI] Started launching new instance with master IP: " + masterIP);
@@ -64,29 +72,23 @@ public class LaunchInstance {
             RunInstancesRequest request = RunInstancesRequest.builder()
                     .imageId(AMI_ID)
                     .instanceType(INSTANCE_TYPE)
-                    .minCount(1)
-                    .maxCount(1)
+                    .minCount(count)
+                    .maxCount(count)
                     .keyName(KEY_NAME)
                     .securityGroupIds(SEC_GROUP_ID)
                     .userData(encodedUserData)
                     .build();
 
             RunInstancesResponse response = ec2Client.runInstances(request);
-            String instanceId = response.instances().get(0).instanceId();
-            System.out.println("[LI] Instance launched: " + instanceId);
-            
-            String privateIp = waitForInstanceReady(instanceId);
-            
-            if (privateIp != null) {
-                System.out.println("Instance ready with IP: " + privateIp);
-                // LoadBalancer.activeWorkers.put(privateIp, new WorkerNode(instanceId, privateIp));
-                LOGGER.info("[LI] Instance " + instanceId + " is ready with IP: " + privateIp);
-                return instanceId;
-            } else {
-                System.out.println("Timeout waiting for instance IP");
-                terminateInstance(instanceId);
-                return null;
+        
+            for (Instance instance : response.instances()) {
+                String instanceId = instance.instanceId();
+                launchedInstanceIds.add(instanceId);
+                System.out.println("[LI] Instance launched in AWS: " + instanceId);
+                scheduleInstanceCheck(instanceId, System.currentTimeMillis(), 1);
             }
+
+            return launchedInstanceIds;
             
         } catch (AwsServiceException e) {
             LOGGER.log(Level.SEVERE, "AWS error: " + e.awsErrorDetails().errorCode(), e);
@@ -214,7 +216,10 @@ public class LaunchInstance {
 
     public void terminateInstanceByIp(String privateIp) {
         try {
-            DescribeInstancesRequest request = DescribeInstancesRequest.builder().build();
+            DescribeInstancesRequest request = DescribeInstancesRequest
+                .builder()
+                .filters(Filter.builder().name("private-ip-address").values(privateIp).build())
+                .build();
             DescribeInstancesResponse response = ec2Client.describeInstances(request);
             
             for (Reservation reservation : response.reservations()) {
@@ -234,5 +239,54 @@ public class LaunchInstance {
         if (ec2Client != null) {
             ec2Client.close();
         }
+        // Encerrar o scheduler no shutdown
+        if (watchdogScheduler != null) {
+            watchdogScheduler.shutdown();
+        }
+    }
+
+    private void scheduleInstanceCheck(String instanceId, long startTime, int attemptCount) {
+        // Check if we've exceeded the maximum wait time before scheduling the next check
+        if (System.currentTimeMillis() - startTime > WAIT_TIME_FOR_READY) {
+            System.out.println("[LI] Timeout waiting for instance IP: " + instanceId);
+            terminateInstance(instanceId);
+            if (LoadBalancer.autoScaler != null) {
+                LoadBalancer.autoScaler.removeWarmingUpInstance(instanceId);
+            }
+            return;
+        }
+
+        // Schedule the next check after a delay
+        watchdogScheduler.schedule(() -> {
+            try {
+                DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                        .instanceIds(instanceId)
+                        .build();
+                
+                DescribeInstancesResponse response = ec2Client.describeInstances(request);
+                
+                if (!response.reservations().isEmpty()) {
+                    Instance instance = response.reservations().get(0).instances().get(0);
+                    
+                    if (instance.state().name() == InstanceStateName.RUNNING && 
+                        instance.privateIpAddress() != null && 
+                        !instance.privateIpAddress().isEmpty()) {
+                        
+                        System.out.println("[LI] Instance " + instanceId + " is ready with IP: " + instance.privateIpAddress());
+                        // Instance is ready, stop checking
+                        return; 
+                    }
+                }
+                
+                LOGGER.fine("[LI] Instance " + instanceId + " not ready yet (attempt " + attemptCount + "), scheduling next check...");
+                // if not ready, schedule another check with exponential backoff
+                scheduleInstanceCheck(instanceId, startTime, attemptCount + 1);
+                
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "[LI] Error checking instance status for " + instanceId, e);
+                // On error, also schedule another check with backoff
+                scheduleInstanceCheck(instanceId, startTime, attemptCount + 1);
+            }
+        }, CHECK_INTERVAL, TimeUnit.MILLISECONDS);
     }
 }

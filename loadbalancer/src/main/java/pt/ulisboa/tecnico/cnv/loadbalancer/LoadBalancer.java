@@ -38,11 +38,15 @@ public class LoadBalancer {
         }
     );
 
+    public static final Object clusterStateLock = new Object();
+
     private static final int LB_PORT = 8000;
 
     private static String masterIp = "127.0.0.1";
     
     private static ScheduledExecutorService scheduler;
+
+    public static AutoScaler autoScaler;
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
@@ -63,7 +67,7 @@ public class LoadBalancer {
         
         try {
             System.out.println("Starting Load Balancer on port " + LB_PORT);
-            startHttpServer();
+            startHttpServer(masterIp);
             startScheduledTasks(masterIp);
             System.out.println("Load Balancer ready on port " + LB_PORT);
         } catch (Exception e) {
@@ -72,22 +76,25 @@ public class LoadBalancer {
         }
     }
 
-    private static void startHttpServer() throws Exception {
+    private static void startHttpServer(String masterIP) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(LB_PORT), 0);
         LoadBalancerHandler handler = new LoadBalancerHandler();
+
+        autoScaler = new AutoScaler(masterIP);
         
         server.createContext("/fractals", handler);
         server.createContext("/dna", handler);
         server.createContext("/grayscott", handler);
-        server.createContext("/register", new WorkerRegisterHandler());
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.createContext("/register", new WorkerRegisterHandler(handler));
+        server.setExecutor(Executors.newFixedThreadPool(200));
+
+        autoScaler.start();
         server.start();
     }
 
     private static void startScheduledTasks(String masterIP) {
         scheduler = Executors.newScheduledThreadPool(3);
-        scheduler.scheduleAtFixedRate(new HealthChecker(), 0, 5, TimeUnit.SECONDS);
-        scheduler.scheduleAtFixedRate(new AutoScaler(masterIP), 0, 15, TimeUnit.SECONDS);
+        scheduler.scheduleWithFixedDelay(new HealthChecker(autoScaler), 0, 5, TimeUnit.SECONDS);
         scheduler.scheduleAtFixedRate(new MSSPoller(), 0, 30, TimeUnit.SECONDS);
     }
 

@@ -19,9 +19,10 @@ public class WorkerNode {
     private final int[] workHistory;
     private int historyIndex = 0;
     private int historySamples = 0;
+    public static final int DEFAULT_MAX_CAPACITY = 1000000;
 
     public WorkerNode(String instanceId, String ip) {
-        this(instanceId, ip, 100000); //TODO: Tune this default capacity
+        this(instanceId, ip, DEFAULT_MAX_CAPACITY); //TODO: Tune this default capacity
     }
 
     public WorkerNode(String instanceId, String ip, int maxCapacity) {
@@ -45,6 +46,7 @@ public class WorkerNode {
     public AtomicInteger getWork() { return work; }
     public int getMissedPings() { return missedPings.get(); }
     public void setMissedPings(int value) { missedPings.set(value); }
+    public void incrementMissedPings() { missedPings.incrementAndGet(); }
     public void incrementWork(int value) { work.addAndGet(value); }
     public double getCpuUtilization() { return cpuUtilization.get(); }
     public double getRelativeWork() { return (double) work.get() / maxCapacity; }

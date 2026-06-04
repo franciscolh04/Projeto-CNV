@@ -2,9 +2,8 @@ package pt.ulisboa.tecnico.cnv.loadbalancer;
 
 import java.util.logging.Logger;
 
-import software.amazon.awssdk.services.ec2.endpoints.internal.Value.Str;
-
 import java.util.logging.Level;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.ArrayList;
@@ -18,7 +17,7 @@ import java.util.ArrayList;
  * 
      * Scale up/down decisions are smoothed with averaging to avoid oscillations.
  */
-public class AutoScaler implements Runnable {
+public class AutoScaler extends Thread {
     private static final Logger LOGGER = Logger.getLogger(AutoScaler.class.getName());
     
     // Scale thresholds based on Weighted Score (0.0 to 1.0+)
@@ -35,10 +34,16 @@ public class AutoScaler implements Runnable {
     private static final long COOLDOWN_MS = 120000;         // 2 minutes between scale operations
     private static final long DRAIN_TIMEOUT_MS = 60000;     // 60 seconds timeout for draining
 
-    private final LaunchInstance launchInstanceManager;
+    final LaunchInstance launchInstanceManager;
     private final String masterIp;
     private long lastScaleOperation = 0;
-    private final ConcurrentHashMap<String, DrainingNode> drainingWorkers = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<String, DrainingNode> drainingWorkers = new ConcurrentHashMap<>();
+
+    private final Object monitor = new Object();
+    private static final ConcurrentHashMap<String, Long> warmingUpInstances = new ConcurrentHashMap<>();
+    private static final long WARMUP_TIMEOUT_MS = 300000; // 5 minutes
+
+    private static final int QUEUE_SIZE_THRESHOLD = 5;
 
     public AutoScaler(String masterIP) {
         this.launchInstanceManager = new LaunchInstance();
@@ -68,48 +73,73 @@ public class AutoScaler implements Runnable {
         }
     }
 
+    /*
+     * Method to trigger re-evaluation of cluster state
+    */
+    public void requestEvaluation() {
+        synchronized (monitor) {
+            monitor.notify();
+            LOGGER.info("[AS] Wake up signal received. Re-evaluating cluster state...");
+        }
+    }
+
     @Override
     public void run() {
-        try {
-            // Clean up draining workers that have completed draining
-            cleanupDrainingWorkers();
-
-            int totalWorkers = LoadBalancer.activeWorkers.size();
-            long timeSinceLastScale = System.currentTimeMillis() - lastScaleOperation;
-
-            // Edge case: no active workers, scale out immediately
-            if (totalWorkers == 0) {
-                if (lastScaleOperation == 0 || timeSinceLastScale > COOLDOWN_MS) {
-                    scaleOut();
-                    lastScaleOperation = System.currentTimeMillis();
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                synchronized (monitor) {
+                    // Wait for either a wake-up signal or a timeout to perform periodic evaluation
+                    monitor.wait(15000); 
                 }
-                return;
+                
+                evaluateClusterState();
+                
+            } catch (InterruptedException e) {
+                LOGGER.info("[AS] AutoScaler thread interrupted.");
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                LOGGER.log(Level.SEVERE, "Error during auto-scaling evaluation", e);
             }
+        }
+    }
 
-            // Calculate averages
-            double avgWork = calculateAverageWork();
-            double avgCpuPercent = calculateAverageCpuUtilization();
-            double weightedScore = calculateClusterWeightedScore();
+    private void evaluateClusterState() {
+        cleanupDrainingWorkers();
+        cleanupStaleWarmingUpInstances();
 
-            LOGGER.info("[AS] Cluster Status: workers=" + totalWorkers + " avgWork=" + 
-                String.format("%.0f", avgWork) + " avgCPU=" + String.format("%.1f", avgCpuPercent) + 
-                "% score=" + String.format("%.3f", weightedScore) + " timeSinceScale=" + timeSinceLastScale + "ms");
+        int totalActiveWorkers = LoadBalancer.activeWorkers.size();
+        int totalWarmingUp = warmingUpInstances.size();
 
-            // Scale decisions (cooldown is checked inside)
-            if (shouldScaleUp(totalWorkers, timeSinceLastScale, weightedScore)) {
-                scaleOut();
-                lastScaleOperation = System.currentTimeMillis();
-            } else if (shouldScaleDown(totalWorkers, timeSinceLastScale, weightedScore)) {
-                String workerToRemove = findLeastLoadedWorker();
-                if (workerToRemove != null) {
-                    LOGGER.info("[AS] Scale down: removing worker " + workerToRemove + 
-                        " (score=" + String.format("%.2f", weightedScore) + ")");
-                    initiateScaleIn(workerToRemove);
-                    lastScaleOperation = System.currentTimeMillis();
-                }
+        // Edge case extremo: zero workers e zero a iniciar
+        if (totalActiveWorkers == 0 && totalWarmingUp == 0) {
+            executeScaleOutAsync(1);
+            return;
+        }
+        
+        long currentCapacity = getClusterTotalCapacity();
+        long averageCapacity = getAverageNodeCapacity();
+        
+        // Project capacity: current active capacity + estimated capacity from warming up instances
+        long projectedCapacity = currentCapacity + (totalWarmingUp * averageCapacity);
+        long totalDemand = getTotalDemand();
+        double avgScore = calculateClusterWeightedScore();
+
+        LOGGER.info("[AS] Status: active=" + totalActiveWorkers + 
+            " | warmingUp=" + totalWarmingUp +
+            " | demand=" + totalDemand + "/" + projectedCapacity + 
+            " | score=" + String.format("%.3f", avgScore) + 
+            " | queue=" + LoadBalancerHandler.pendingQueue.size());
+
+        long timeSinceLastScale = System.currentTimeMillis() - lastScaleOperation;
+        if (timeSinceLastScale > COOLDOWN_MS) {
+            // Usamos a projectedCapacity para tomar a decisão de scale up
+            if (shouldScaleUp(totalDemand, projectedCapacity)) {
+                processScaleUp(totalDemand, projectedCapacity, totalActiveWorkers + totalWarmingUp);
+            } 
+            else if (shouldScaleDown(totalDemand, currentCapacity, avgScore, totalActiveWorkers)) {
+                processScaleDown(totalDemand, avgScore);
             }
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error during auto-scaling", e);
         }
     }
 
@@ -148,15 +178,22 @@ public class AutoScaler implements Runnable {
     }
 
     /**
-     * Terminates a worker instance and removes it from the draining state.
+     * Terminates a worker instance and removes it from the draining state asynchronously.
      */
     private void terminateWorker(String workerIp) {
         try {
-            drainingWorkers.remove(workerIp);
-            launchInstanceManager.terminateInstanceByIp(workerIp);
-            LOGGER.info("[AS] Worker " + workerIp + " terminated successfully");
+            CompletableFuture.runAsync(() -> {
+                try {
+                    launchInstanceManager.terminateInstanceByIp(workerIp);
+                    LOGGER.info("[AS] Worker " + workerIp + " async termination requested to AWS successfully.");
+                    drainingWorkers.remove(workerIp);
+                } catch (Exception e) {
+                    LOGGER.log(Level.SEVERE, "Error during async termination of worker " + workerIp, e);
+                }
+            });
+            
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error terminating worker " + workerIp, e);
+            LOGGER.log(Level.SEVERE, "Error preparing termination for worker " + workerIp, e);
         }
     }
 
@@ -176,54 +213,6 @@ public class AutoScaler implements Runnable {
         }
         
         return leastLoaded;
-    }
-
-    private void scaleOut() {
-        try {
-            LOGGER.info("[AS] Scaling up - launching new instance");
-            String instanceId = launchInstanceManager.launchInstance(masterIp);
-            if (instanceId == null) {
-                LOGGER.warning("[AS] Failed to launch instance");
-            }
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error during scale out", e);
-        }
-    }
-    
-    /**
-     * Calculates the average work across all active workers (using historical average).
-     * This smooths out momentary spikes and gives a better representation of sustained load.
-     */
-    private double calculateAverageWork() {
-        if (LoadBalancer.activeWorkers.isEmpty()) {
-            return 0.0;
-        }
-        
-        double totalAvgWork = 0.0;
-        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
-            totalAvgWork += node.getAverageWork();
-        }
-        
-        return totalAvgWork / LoadBalancer.activeWorkers.size();
-    }
-
-    /**
-     * Calculates the average CPU utilization across all active workers (using historical average).
-     * Uses time-windowed average instead of latest value to smooth out spikes.
-     * 
-     * @return percentage (0-100), or 0 if no active workers
-     */
-    private double calculateAverageCpuUtilization() {
-        if (LoadBalancer.activeWorkers.isEmpty()) {
-            return 0.0;
-        }
-        
-        double totalCpu = 0.0;
-        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
-            totalCpu += node.getAverageCpuUtilization();
-        }
-        
-        return totalCpu / LoadBalancer.activeWorkers.size();
     }
 
     /**
@@ -255,87 +244,178 @@ public class AutoScaler implements Runnable {
      * @return average score across all workers
      */
     private double calculateClusterWeightedScore() {
-        if (LoadBalancer.activeWorkers.isEmpty()) {
-            return 0.0;
-        }
-        
+        int currentSize = LoadBalancer.activeWorkers.size();
+        if (currentSize == 0) return 0.0;
+
         double totalScore = 0.0;
         for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
             totalScore += calculateWorkerScore(node);
         }
+
+        return totalScore / currentSize;
+    }
+    
+    private static long getClusterTotalCapacity() {
+        long capacity = 0;
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            capacity += node.getMaxCapacity();
+        }
+        return capacity;
+    }
+
+    private long getTotalDemand() {
+        long currentWork = 0;
+        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+            currentWork += node.getWork().get();
+        }
+        LOGGER.fine("[AS] Current cluster work: " + currentWork);
         
-        return totalScore / LoadBalancer.activeWorkers.size();
+        long queueWork = 0;
+        for (Job job : LoadBalancerHandler.pendingQueue) {
+            queueWork += job.estimatedWork;
+        }
+        LOGGER.fine("[AS] Pending queue work: " + queueWork);
+        
+        return currentWork + queueWork;
     }
 
     /**
-     * Determines if cluster should scale up (add workers).
-     * 
-     * Conditions:
-     * - Cluster average score > SCALE_UP_THRESHOLD
-     * - Number of workers < MAX_INSTANCES
-     * - Cooldown has passed
-     * - Cluster is stable (no missed pings)
+     * Determines if cluster should scale up.
      */
-    private boolean shouldScaleUp(int totalWorkers, long timeSinceLastScale, double weightedScore) {
-        // Check cooldown
-        if (timeSinceLastScale < COOLDOWN_MS) {
-            return false;
+    private boolean shouldScaleUp(long totalDemand, long clusterCapacity) {
+        long idealCapacityThreshold = (long) (clusterCapacity * SCALE_UP_THRESHOLD);
+        return totalDemand > idealCapacityThreshold;
+    }
+
+    private void processScaleUp(long totalDemand, long projectedCapacity, int projectedTotalWorkers) {
+        if (projectedTotalWorkers >= MAX_INSTANCES) {
+            LOGGER.fine("[AS] Cannot scale up: MAX_INSTANCES reached (including warming up).");
+            return;
         }
+
+        long idealCapacityThreshold = (long) (projectedCapacity * SCALE_UP_THRESHOLD);
+        long excessWork = totalDemand - idealCapacityThreshold;
         
-        // Check max instance limit
-        if (totalWorkers >= MAX_INSTANCES) {
-            LOGGER.fine("[AS] Cannot scale up: at max instances (" + totalWorkers + ")");
-            return false;
+        long averageCapacity = getAverageNodeCapacity();
+        long comfortableCapacityPerMachine = (long) (averageCapacity * SCALE_UP_THRESHOLD);
+        
+        int instancesNeeded = (int) Math.ceil((double) excessWork / Math.max(1, comfortableCapacityPerMachine));   
+        int instancesToLaunch = Math.min(instancesNeeded, 2);
+        instancesToLaunch = Math.min(instancesToLaunch, MAX_INSTANCES - projectedTotalWorkers);
+        
+        if (instancesToLaunch > 0) {
+            LOGGER.info("[AS] Scaling out. Launching " + instancesToLaunch + " async instances.");
+            executeScaleOutAsync(instancesToLaunch);
         }
+    }
+
+    private void executeScaleOutAsync(int count) {
+        lastScaleOperation = System.currentTimeMillis();
+        LOGGER.info("[AS] Calling AWS API to launch " + count + " instances...");
+
+        List<String> launchedIds = launchInstanceManager.launchInstances(masterIp, count);
         
-        // Check cluster stability
-        for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
-            if (node.getMissedPings() > 0) {
-                LOGGER.fine("[AS] Cannot scale up: cluster unstable (worker " + node.getIp() + " missed pings)");
-                return false;
+        if (launchedIds == null || launchedIds.isEmpty()) {
+            LOGGER.warning("[AS] AWS failed to launch instances. Capacity reservation aborted.");
+            return;
+        } else {
+            LOGGER.info("[AS] Successfully requested " + launchedIds.size() + " instances.");
+        }
+
+        long currentTime = System.currentTimeMillis();
+        for (String instanceId : launchedIds) {
+            synchronized (LoadBalancer.clusterStateLock) {
+                boolean isAlreadyActive = false;
+                for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
+                    if (instanceId.equals(node.getInstanceId())) {
+                        isAlreadyActive = true;
+                        break;
+                    }
+                }
+
+                if (!isAlreadyActive) {
+                    warmingUpInstances.put(instanceId, currentTime);
+                } else {
+                    LOGGER.info("[AS] Instance " + instanceId + " bypassed warmingUp!");
+                }
             }
         }
-        
-        // Check score
-        boolean shouldScale = weightedScore > SCALE_UP_THRESHOLD;
-        if (shouldScale) {
-            LOGGER.info("[AS] Scale up condition met: score=" + String.format("%.3f", weightedScore) + 
-                " > " + SCALE_UP_THRESHOLD);
-        }
-        
-        return shouldScale;
+
+        requestEvaluation();
     }
 
     /**
      * Determines if cluster should scale down.
      */
-    private boolean shouldScaleDown(int totalWorkers, long timeSinceLastScale, double weightedScore) {
-        // Check cooldown
-        if (timeSinceLastScale < COOLDOWN_MS) {
-            return false;
-        }
+    private boolean shouldScaleDown(long totalDemand, long clusterCapacity, double avgScore, int totalWorkers) {
+        if (totalWorkers <= MIN_INSTANCES) return false;
         
-        // Check min instance limit
-        if (totalWorkers <= MIN_INSTANCES) {
-            LOGGER.fine("[AS] Cannot scale down: at min instances (" + totalWorkers + ")");
-            return false;
-        }
+        if (LoadBalancerHandler.pendingQueue.size() >= QUEUE_SIZE_THRESHOLD) return false;
 
-        // Check missed pings
+        // Block scale down if cluster is unstable
         for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
             if (node.getMissedPings() > 0) {
-                LOGGER.fine("[AS] Cannot scale down: cluster unstable (worker " + node.getIp() + " missed pings)");
+                LOGGER.fine("[AS] Scale down aborted: Cluster is unstable (missed pings detected).");
                 return false;
             }
         }
+
+        long averageCapacity = getAverageNodeCapacity();
+        long capacityWithOneLess = clusterCapacity - averageCapacity;
+        long safeCapacityThreshold = (long) (capacityWithOneLess * SCALE_DOWN_THRESHOLD);
+
+        return avgScore < SCALE_DOWN_THRESHOLD && totalDemand <= safeCapacityThreshold;
+    }
+
+    private void processScaleDown(long totalDemand, double avgScore) {
+        int totalWorkers = LoadBalancer.activeWorkers.size();
+        boolean nodeRemoved = true;
         
-        // Check score
-        boolean shouldScale = weightedScore < SCALE_DOWN_THRESHOLD;
-        if (shouldScale) {
-            LOGGER.info("[AS] Scale down: score=" + String.format("%.3f", weightedScore) + 
-                " < " + SCALE_DOWN_THRESHOLD);
+        // Iteratively remove least loaded workers while conditions are met and we haven't hit minimum instance count
+        while (totalWorkers > MIN_INSTANCES && nodeRemoved) {
+            nodeRemoved = false;
+            long clusterCapacity = getClusterTotalCapacity();
+            long averageCapacity = getAverageNodeCapacity();
+            long safeCapacityThreshold = (long) ((clusterCapacity - averageCapacity) * SCALE_DOWN_THRESHOLD);
+
+            if (avgScore < SCALE_DOWN_THRESHOLD && totalDemand <= safeCapacityThreshold) {
+                String workerToRemove = findLeastLoadedWorker();
+                if (workerToRemove != null) {
+                    LOGGER.info("[AS] Safe conditions met. Removing instance: " + workerToRemove);
+                    initiateScaleIn(workerToRemove);
+                    totalWorkers--;
+                    nodeRemoved = true;
+                }
+            }
         }
         
-        return shouldScale;
+        if (totalWorkers < LoadBalancer.activeWorkers.size()) {
+            lastScaleOperation = System.currentTimeMillis();
+        }
+    }
+
+    public static long getAverageNodeCapacity() {
+        int totalWorkers = LoadBalancer.activeWorkers.size();
+        if (totalWorkers == 0) return WorkerNode.DEFAULT_MAX_CAPACITY;
+        return getClusterTotalCapacity() / totalWorkers;
+    }
+
+    private void cleanupStaleWarmingUpInstances() {
+        long now = System.currentTimeMillis();
+        warmingUpInstances.entrySet().removeIf(entry -> {
+            boolean expired = (now - entry.getValue()) > WARMUP_TIMEOUT_MS;
+            if (expired) {
+                launchInstanceManager.terminateInstance(entry.getKey());
+            }
+            return expired;
+        });
+    }
+
+    public void removeWarmingUpInstance(String instanceId) {
+        if (instanceId != null) {
+            if (warmingUpInstances.remove(instanceId) != null) {
+                LOGGER.info("[AS] Instance " + instanceId + " successfully registered and removed from warmingUp.");
+            }
+        }   
     }
 }
