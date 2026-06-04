@@ -37,8 +37,8 @@ public class LoadBalancerHandler implements HttpHandler {
     private static final long CONNECT_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 120000;
     private static final int WORKER_PORT = 8000;
-    private static final int FAAS_THRESHOLD = 1_500; // TODO: Tune this
-    private static final int QUEUE_SIZE_THRESHOLD = 5;
+    private static final int FAAS_THRESHOLD = 2000; // TODO: Tune this
+    private static final int QUEUE_SIZE_THRESHOLD = 3;
     private static final double HARD_LIMIT_SCORE = 0.90;
     
     private final HttpClient httpClient;
@@ -416,10 +416,8 @@ public class LoadBalancerHandler implements HttpHandler {
     */
     private WorkerNode getSuitableServer(int requiredWork) {
         WorkerNode bestNode = null;
-        WorkerNode fallbackNode = null;
+        double minScore = Double.MAX_VALUE;
         final double WEIGHT_CPU = 0.4, WEIGHT_WORK = 0.6;
-        double maxScoreUnderLimit = -1.0;
-        double minWorkForFallback = Double.MAX_VALUE;
 
         for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
             // Normalize CPU from 0-100 to 0-1
@@ -435,38 +433,23 @@ public class LoadBalancerHandler implements HttpHandler {
             // Weighted score
             double projectedScore = (WEIGHT_CPU * cpuNormalized) + (WEIGHT_WORK * projectedRelativeWork);
             
-            // 1. Primary Routing (Soft Limit <= 90%)
-            if (projectedScore <= HARD_LIMIT_SCORE) {
-                if (projectedScore > maxScoreUnderLimit) {
-                    maxScoreUnderLimit = projectedScore;
-                    bestNode = node;
-                }
-            } 
-            // 2. Fallback / Best-Effort
-            else if (projectedRelativeWork <= 1.0) {
-                if (projectedRelativeWork < minWorkForFallback) {
-                    minWorkForFallback = projectedRelativeWork;
-                    fallbackNode = node;
-                }
+            if (projectedScore < minScore) {
+                minScore = projectedScore;
+                bestNode = node;
             }
         }
     
-        // BestNode (The one with the highest score that is still under the hard limit) 
-        if (bestNode != null) {
+        if (bestNode != null && minScore <= HARD_LIMIT_SCORE) {
             LOGGER.info("[LB] Selected primary worker " + bestNode.getIp() + 
-                " (score: " + String.format("%.3f", maxScoreUnderLimit) + ")");
+                " (score: " + String.format("%.3f", minScore) + ")");
             return bestNode;
         } 
-        // FallbackNode (The one with enough capacity to fit the job)
-        else if (fallbackNode != null) {
-            LOGGER.warning("[LB] Soft limit exceeded. Selected fallback worker " + fallbackNode.getIp() + 
-                " (projected work: " + String.format("%.1f%%", minWorkForFallback * 100) + ")");
-            return fallbackNode;
-        }
         
-        // 3. Queue & Scale Out
-        LOGGER.warning("[LB] No suitable worker found (all exceeded 100% capacity). Job stays in queue.");
-        LoadBalancer.autoScaler.requestEvaluation();
+        // Every worker exceeds the hard limit
+        LOGGER.warning("[LB] No suitable worker found (all exceeded limit). Job stays in queue.");
+        if (LoadBalancer.autoScaler != null) {
+            LoadBalancer.autoScaler.requestEvaluation();
+        }
         return null;
     }
 

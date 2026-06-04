@@ -19,7 +19,7 @@ public class WorkerNode {
     private final int[] workHistory;
     private int historyIndex = 0;
     private int historySamples = 0;
-    public static final int DEFAULT_MAX_CAPACITY = 1000000;
+    public static final int DEFAULT_MAX_CAPACITY = 500000;
 
     public WorkerNode(String instanceId, String ip) {
         this(instanceId, ip, DEFAULT_MAX_CAPACITY); //TODO: Tune this default capacity

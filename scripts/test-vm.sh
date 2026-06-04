@@ -26,11 +26,14 @@ echo ""
 # Launch heavy XL/L tests in parallel
 for i in $(seq 1 $PARALLEL_JOBS); do
     bash req-fractals-XL.sh "$LB_IP" > /dev/null 2>&1 &
+    bash req-fractals-XS.sh "$LB_IP" > /dev/null 2>&1 &
     bash req-grayscott-L.sh "$LB_IP" > /dev/null 2>&1 &
+    bash req-grayscott-XS.sh "$LB_IP" > /dev/null 2>&1 &
     bash req-dna-XL.sh "$LB_IP" > /dev/null 2>&1 &
+    bash req-dna-XS.sh "$LB_IP" > /dev/null 2>&1 &
 done
 
-echo "$((PARALLEL_JOBS * 3)) workloads spawned"
+echo "$((PARALLEL_JOBS * 6)) workloads spawned"
 echo "Waiting for completion..."
 echo ""
 

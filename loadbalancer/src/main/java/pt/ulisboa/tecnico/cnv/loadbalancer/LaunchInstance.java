@@ -84,7 +84,7 @@ public class LaunchInstance {
             for (Instance instance : response.instances()) {
                 String instanceId = instance.instanceId();
                 launchedInstanceIds.add(instanceId);
-                System.out.println("[LI] Instance launched in AWS: " + instanceId);
+                LOGGER.info("[LI] Instance launched in AWS: " + instanceId);
                 scheduleInstanceCheck(instanceId, System.currentTimeMillis(), 1);
             }
 
@@ -207,7 +207,7 @@ public class LaunchInstance {
                     .build();
             
             ec2Client.terminateInstances(request);
-            System.out.println("[LI] Instance terminated: " + instanceId);
+            LOGGER.info("[LI] Instance terminated: " + instanceId);
             
         } catch (AwsServiceException e) {
             LOGGER.log(Level.SEVERE, "Error terminating instance", e);
@@ -248,7 +248,7 @@ public class LaunchInstance {
     private void scheduleInstanceCheck(String instanceId, long startTime, int attemptCount) {
         // Check if we've exceeded the maximum wait time before scheduling the next check
         if (System.currentTimeMillis() - startTime > WAIT_TIME_FOR_READY) {
-            System.out.println("[LI] Timeout waiting for instance IP: " + instanceId);
+            LOGGER.info("[LI] Timeout waiting for instance IP: " + instanceId);
             terminateInstance(instanceId);
             if (LoadBalancer.autoScaler != null) {
                 LoadBalancer.autoScaler.removeWarmingUpInstance(instanceId);
@@ -272,7 +272,7 @@ public class LaunchInstance {
                         instance.privateIpAddress() != null && 
                         !instance.privateIpAddress().isEmpty()) {
                         
-                        System.out.println("[LI] Instance " + instanceId + " is ready with IP: " + instance.privateIpAddress());
+                        LOGGER.info("[LI] Instance " + instanceId + " is ready with IP: " + instance.privateIpAddress());
                         // Instance is ready, stop checking
                         return; 
                     }
