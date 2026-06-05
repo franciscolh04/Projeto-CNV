@@ -15,14 +15,14 @@ import java.util.ArrayList;
  * 
  * Score = (W1 * avgCPU) + (W2 * currentWork/maxCapacity)
  * 
-     * Scale up/down decisions are smoothed with averaging to avoid oscillations.
+     * Scale out/in decisions are smoothed with averaging to avoid oscillations.
  */
 public class AutoScaler extends Thread {
     private static final Logger LOGGER = Logger.getLogger(AutoScaler.class.getName());
     
     // Scale thresholds based on Weighted Score (0.0 to 1.0+)
-    private static final double SCALE_UP_THRESHOLD = 0.7;    // Scale up when average score > 0.7
-    private static final double SCALE_DOWN_THRESHOLD = SCALE_UP_THRESHOLD-0.20;  // Scale down when average score < 0.3
+    private static final double SCALE_OUT_THRESHOLD = 0.7;    // Scale out when average score > 0.7
+    private static final double SCALE_IN_THRESHOLD = SCALE_OUT_THRESHOLD-0.20;  // Scale in when average score < 0.3
     
     // Weighted Score weights
     private static final double WEIGHT_CPU = 0.4;           // CPU contribution (40%)
@@ -133,12 +133,12 @@ public class AutoScaler extends Thread {
 
         long timeSinceLastScale = System.currentTimeMillis() - lastScaleOperation;
         if (timeSinceLastScale > COOLDOWN_MS) {
-            // First check if we need to scale up (more capacity needed)
-            if (shouldScaleUp(totalDemand, projectedCapacity)) {
-                processScaleUp(totalDemand, projectedCapacity, totalActiveWorkers + totalWarmingUp);
+            // First check if we need to scale out (more capacity needed)
+            if (shouldScaleOut(totalDemand, projectedCapacity)) {
+                processScaleOut(totalDemand, projectedCapacity, totalActiveWorkers + totalWarmingUp);
             } 
-            else if (shouldScaleDown(totalDemand, currentCapacity, totalActiveWorkers)) {
-                processScaleDown(totalDemand);
+            else if (shouldScaleIn(totalDemand, currentCapacity, totalActiveWorkers)) {
+                processScaleIn(totalDemand);
             }
         }
     }
@@ -280,24 +280,24 @@ public class AutoScaler extends Thread {
     }
 
     /**
-     * Determines if cluster should scale up.
+     * Determines if cluster should scale out.
      */
-    private boolean shouldScaleUp(long totalDemand, long clusterCapacity) {
-        long idealCapacityThreshold = (long) (clusterCapacity * SCALE_UP_THRESHOLD);
+    private boolean shouldScaleOut(long totalDemand, long clusterCapacity) {
+        long idealCapacityThreshold = (long) (clusterCapacity * SCALE_OUT_THRESHOLD);
         return totalDemand > idealCapacityThreshold;
     }
 
-    private void processScaleUp(long totalDemand, long projectedCapacity, int projectedTotalWorkers) {
+    private void processScaleOut(long totalDemand, long projectedCapacity, int projectedTotalWorkers) {
         if (projectedTotalWorkers >= MAX_INSTANCES) {
-            LOGGER.fine("[AS] Cannot scale up: MAX_INSTANCES reached (including warming up).");
+            LOGGER.fine("[AS] Cannot scale out: MAX_INSTANCES reached (including warming up).");
             return;
         }
 
-        long idealCapacityThreshold = (long) (projectedCapacity * SCALE_UP_THRESHOLD);
+        long idealCapacityThreshold = (long) (projectedCapacity * SCALE_OUT_THRESHOLD);
         long excessWork = totalDemand - idealCapacityThreshold;
         
         long averageCapacity = getAverageNodeCapacity();
-        long comfortableCapacityPerMachine = (long) (averageCapacity * SCALE_UP_THRESHOLD);
+        long comfortableCapacityPerMachine = (long) (averageCapacity * SCALE_OUT_THRESHOLD);
         
         int instancesNeeded = (int) Math.ceil((double) excessWork / Math.max(1, comfortableCapacityPerMachine));   
         int instancesToLaunch = Math.min(instancesNeeded, 2);
@@ -345,29 +345,29 @@ public class AutoScaler extends Thread {
     }
 
     /**
-     * Determines if cluster should scale down.
+     * Determines if cluster should scale in.
      */
-    private boolean shouldScaleDown(long totalDemand, long clusterCapacity, int totalWorkers) {
+    private boolean shouldScaleIn(long totalDemand, long clusterCapacity, int totalWorkers) {
         if (totalWorkers <= MIN_INSTANCES) return false;
         
         if (LoadBalancerHandler.pendingQueue.size() >= QUEUE_SIZE_THRESHOLD) return false;
 
-        // Block scale down if cluster is unstable
+        // Block scale in if cluster is unstable
         for (WorkerNode node : LoadBalancer.activeWorkers.values()) {
             if (node.getMissedPings() > 0) {
-                LOGGER.fine("[AS] Scale down aborted: Cluster is unstable (missed pings detected).");
+                LOGGER.fine("[AS] Scale in aborted: Cluster is unstable (missed pings detected).");
                 return false;
             }
         }
 
         long averageCapacity = getAverageNodeCapacity();
         long capacityWithOneLess = clusterCapacity - averageCapacity;
-        long safeCapacityThreshold = (long) (capacityWithOneLess * (SCALE_DOWN_THRESHOLD));
+        long safeCapacityThreshold = (long) (capacityWithOneLess * (SCALE_IN_THRESHOLD));
 
         return totalDemand <= safeCapacityThreshold;
     }
 
-    private void processScaleDown(long totalDemand) {
+    private void processScaleIn(long totalDemand) {
         int totalWorkers = LoadBalancer.activeWorkers.size();
         boolean nodeRemoved = true;
         
@@ -376,7 +376,7 @@ public class AutoScaler extends Thread {
             nodeRemoved = false;
             long clusterCapacity = getClusterTotalCapacity();
             long averageCapacity = getAverageNodeCapacity();
-            long safeCapacityThreshold = (long) ((clusterCapacity - averageCapacity) * (SCALE_DOWN_THRESHOLD));
+            long safeCapacityThreshold = (long) ((clusterCapacity - averageCapacity) * (SCALE_IN_THRESHOLD));
 
             if (totalDemand <= safeCapacityThreshold) {
                 String workerToRemove = findLeastLoadedWorker();
