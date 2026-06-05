@@ -57,11 +57,12 @@ scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH config.sh ec2-user@$
 # 3. Send the webserver-userdata.sh script for worker node initialization
 scp -o StrictHostKeyChecking=no -i $AWS_EC2_SSH_KEYPAR_PATH ./webserver-userdata.sh ec2-user@$MASTER_PUBLIC_DNS:/home/ec2-user/
 
-echo "==================================================="
-echo " Step 6: Register the faas Functions"
-echo "==================================================="
+echo "========================================================="
+echo " Step 6: Register the faas Functions and setup Dynamo"
+echo "========================================================="
 
 ./function-register.sh
+./create-table.sh
 
 echo "==================================================="
 echo " Step 7: Start the System in the Background"
