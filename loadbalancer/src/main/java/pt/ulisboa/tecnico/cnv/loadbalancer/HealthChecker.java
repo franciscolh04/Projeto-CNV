@@ -19,7 +19,7 @@ public class HealthChecker implements Runnable {
     private static final int CONNECT_TIMEOUT_MS = 2000;
     private static final int READ_TIMEOUT_MS = 2000;
     private static final int WORKER_PORT = 8000;
-    private static final int MAX_STRIKES = 5;
+    private static final int MAX_STRIKES = 3;
     
     private final HttpClient httpClient;
     private final AutoScaler autoScaler;

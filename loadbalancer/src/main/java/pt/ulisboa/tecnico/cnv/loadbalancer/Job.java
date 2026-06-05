@@ -12,7 +12,7 @@ public class Job implements Comparable<Job> {
     public final long creationTime;
     public int retries = 0;
     
-    public final int MAX_RETRIES = 2;
+    public final int MAX_RETRIES = 5;
 
     public Job(HttpExchange exchange, String path, String query, int estimatedWork) {
         this.exchange = exchange;
