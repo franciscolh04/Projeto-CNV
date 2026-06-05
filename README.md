@@ -42,8 +42,8 @@ The Auto Scaler thread evaluates the cluster state every 15 seconds. It calculat
 1.  **CPU Utilization ($U$):** Normalized percentage of CPU usage across workers.
 2.  **Relative Work ($W$):** The ratio of current active instructions being processed vs. the worker's maximum capacity.
 
-The score for an individual node is calculated using historical averages (the last 12 samples, covering ~60s) to prevent oscillations:
-$$S_{node} = (0.4 \times \overline{U}_{60s}) + (0.6 \times \overline{W}_{60s})$$
+The score for an individual node is calculated using historical averages (the last 18 samples, covering ~90s) to prevent oscillations:
+$$S_{node} = (0.4 \times \overline{U}_{90s}) + (0.6 \times \overline{W}_{90s})$$
 
 **Scaling Decisions:**
 *   **Scale-Out (Average Cluster Score > 0.7):** Triggered when the total demand exceeds the cluster's "comfortable" capacity. The system calculates the exact number of instances needed to return the score to 0.7. It prioritizes stability by launching at most 2 instances per cycle.

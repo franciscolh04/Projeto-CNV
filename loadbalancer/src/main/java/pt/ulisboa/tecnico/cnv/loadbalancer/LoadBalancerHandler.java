@@ -37,7 +37,7 @@ public class LoadBalancerHandler implements HttpHandler {
     private static final long CONNECT_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 120000;
     private static final int WORKER_PORT = 8000;
-    private static final int FAAS_THRESHOLD = 2000; // TODO: Tune this
+    private static final int FAAS_THRESHOLD = 2000;
     private static final int QUEUE_SIZE_THRESHOLD = 3;
     private static final double HARD_LIMIT_SCORE = 0.90;
     
@@ -283,7 +283,6 @@ public class LoadBalancerHandler implements HttpHandler {
         String functionName="";
         String json="{}";
 
-        // TODO: Move to an auxiliar Function ?
         try {
             java.util.Map<String, String> params = parseQuery(query);
 

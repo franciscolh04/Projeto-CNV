@@ -14,7 +14,7 @@ public class WorkerNode {
     private final int maxCapacity;
     private final AtomicReference<Double> cpuUtilization;
 
-    private static final int HISTORY_SIZE = 12;
+    private static final int HISTORY_SIZE = 18;
     private final double[] cpuHistory;
     private final int[] workHistory;
     private int historyIndex = 0;
@@ -22,7 +22,7 @@ public class WorkerNode {
     public static final int DEFAULT_MAX_CAPACITY = 500000;
 
     public WorkerNode(String instanceId, String ip) {
-        this(instanceId, ip, DEFAULT_MAX_CAPACITY); //TODO: Tune this default capacity
+        this(instanceId, ip, DEFAULT_MAX_CAPACITY);
     }
 
     public WorkerNode(String instanceId, String ip, int maxCapacity) {
