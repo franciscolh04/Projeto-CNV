@@ -23,8 +23,9 @@ The server listens on port 8000 and accepts requests to:
 
 ### Features
 
-- Real-time request routing to healthy workers
-- Automatic scaling based on average load
-- Health checking with worker recovery
-- Work estimation for load balancing decisions
-- AWS EC2 integration for worker provisioning
+- **Real-time Request Routing:** Distributes incoming requests to healthy EC2 workers using a "Lowest Work First" policy based on estimated instruction counts.
+- **Dynamic Auto-Scaling:** Automatically provisions and terminates EC2 instances based on a **Weighted Cluster Score** (40% CPU, 60% Relative Work).
+- **Graceful Draining:** Safely decommissions workers during scale-in by allowing them to finish pending tasks before termination.
+- **Health Checking:** Continuous monitoring of worker health every 5 seconds, with automatic recovery and failover for failed instances.
+- **Predictive Work Estimation:** Uses Exponential Moving Averages (EMA) and DynamoDB history to estimate the computational cost of requests before execution.
+- **AWS Integration:** Native integration with AWS EC2 (Lifecycle Management), Lambda (FaaS offloading), and DynamoDB (Metric Storage).

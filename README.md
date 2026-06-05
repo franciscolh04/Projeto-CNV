@@ -36,9 +36,24 @@ At the end of each EC2 execution, the Web Workers write the actual JVM execution
 
 #### 6. Auto Scaler & Custom OS Telemetry
 Instead of relying on AWS CloudWatch (which has 1-minute resolution limits and added costs), a custom `CPUMonitor` runs on the Web Workers. It samples OS-level Thread CPU loads every 500ms and returns a sliding 90-second average to the Load Balancer every 5 seconds during `/ping` health checks.
-* **Metric Score:** The Auto Scaler evaluates the cluster every 15 seconds based on a hybrid formula: `(0.4 * CPU) + (0.6 * Unprocessed Work Units)`.
-* **Scale-Out Threshold:** Average Score > 0.7 triggers a new EC2 instance launch.
-* **Scale-In Threshold:** Average Score < 0.5 triggers graceful worker draining.
+
+**Cluster Evaluation & Weighted Score:**
+The Auto Scaler thread evaluates the cluster state every 15 seconds. It calculates a **Weighted Cluster Score** ($S_{cluster}$) based on two primary metrics:
+1.  **CPU Utilization ($U$):** Normalized percentage of CPU usage across workers.
+2.  **Relative Work ($W$):** The ratio of current active instructions being processed vs. the worker's maximum capacity.
+
+The score for an individual node is calculated using historical averages (the last 12 samples, covering ~60s) to prevent oscillations:
+$$S_{node} = (0.4 \times \overline{U}_{60s}) + (0.6 \times \overline{W}_{60s})$$
+
+**Scaling Decisions:**
+*   **Scale-Out (Average Cluster Score > 0.7):** Triggered when the total demand exceeds the cluster's "comfortable" capacity. The system calculates the exact number of instances needed to return the score to 0.7. It prioritizes stability by launching at most 2 instances per cycle.
+*   **Scale-In (Average Cluster Score < 0.5):** Triggered when there is significant idle capacity. The system identifies the least loaded worker and initiates a "Graceful Drain". Scale-in is blocked if any worker is unstable (missed pings) or if the pending queue is growing.
+*   **Cooldown Period:** A mandatory 2-minute cooldown is enforced between scaling operations to allow new instances to stabilize the metrics.
+
+**Instance Lifecycle Management:**
+*   **Warming Up State:** New instances requested from AWS are tracked in a `warmingUp` pool. They are included in capacity projections even before they register, preventing "double scaling" during traffic spikes. If an instance fails to register within 5 minutes, it is terminated.
+*   **Graceful Draining:** During scale-in, workers are removed from the active pool but stay alive in a `draining` state. They stop receiving new requests but are allowed up to 60 seconds to finish their current workload before being decommissioned from AWS.
+*   **Fault Detection:** The `HealthChecker` performs pings every 5 seconds. If a worker misses 3 consecutive pings, it is immediately pulled from rotation and terminated to protect system integrity.
 
 ---
 
