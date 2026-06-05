@@ -44,6 +44,9 @@ public class MSSPoller implements Runnable {
         baselineMetricsModel.put("grayscott_ring_true", 210.13);
         baselineMetricsModel.put("grayscott_stripe_false", 365.31);
         baselineMetricsModel.put("grayscott_stripe_true", 365.31);
+        baselineMetricsModel.put("dna_high", 38.0);
+        baselineMetricsModel.put("dna_low_false", 1.5);
+        baselineMetricsModel.put("dna_low_true", 0.01);
     }
 
     @Override
@@ -76,11 +79,8 @@ public class MSSPoller implements Runnable {
                     long actualCost = Long.parseLong(item.get("actualCost").n());
                     String params = item.get("params").s();
 
-                    if ("grayscott".equals(type) || "fractals".equals(type)) {
+                    if ("grayscott".equals(type) || "fractals".equals(type) || "dna".equals(type)) {
                         updateMathModel(type, params, actualCost);
-                    } else if ("dna".equals(type)) {
-                        // DNA is unpredictable due to early exits, exact match caching is preferred
-                        LoadBalancer.dnaExactCache.put(params, (double) actualCost);
                     }
                 }
             }
@@ -114,6 +114,24 @@ public class MSSPoller implements Runnable {
             long w = extractParam(params, "w", 400);
             long h = extractParam(params, "h", 300);
             workUnits = w * h;
+        } else if ("dna".equals(operation)) {
+            long minLength = extractParam(params, "minLength", 1);
+            String stopOnFirst = extractStringParam(params, "stopOnFirst", "false").toLowerCase();
+            String seq1 = extractStringParam(params, "seq1", "");
+            String seq2 = extractStringParam(params, "seq2", "");
+            
+            long l1 = seq1.length();
+            long l2 = seq2.length();
+            
+            workUnits = Math.max(1L, l1 - minLength + 1) * Math.max(1L, l2 - minLength + 1);
+            
+            if (minLength >= 13) {
+                cacheKey = "dna_high";
+            } else if ("true".equals(stopOnFirst)) {
+                cacheKey = "dna_low_true";
+            } else {
+                cacheKey = "dna_low_false";
+            }
         }
 
         // Calculate observed cost per work unit (Beta)

@@ -22,11 +22,8 @@ public class LoadBalancer {
     // Tracks currently active and healthy EC2 worker nodes
     public static final ConcurrentHashMap<String, WorkerNode> activeWorkers = new ConcurrentHashMap<>();
 
-    // EMA Cache for mathematical workloads (Gray-Scott and Fractals) - Stores Beta coefficient
+    // EMA Cache for mathematical workloads (Fractals, Gray-Scott and DNA) - Stores Beta coefficient
     public static final ConcurrentHashMap<String, Double> metricsModelCache = new ConcurrentHashMap<>();
-    
-    // Exact Match Cache for unpredictable workloads (DNA) - Stores exact historical cost
-    public static final ConcurrentHashMap<String, Double> dnaExactCache = new ConcurrentHashMap<>();
 
     // LRU Cache for the last 1000 EXACT requests (Maintains recency automatically)
     public static final java.util.Map<String, Long> recentExactCache = java.util.Collections.synchronizedMap(
@@ -64,6 +61,9 @@ public class LoadBalancer {
         metricsModelCache.put("grayscott_ring_true", 210.13);
         metricsModelCache.put("grayscott_stripe_false", 365.31);
         metricsModelCache.put("grayscott_stripe_true", 365.31);
+        metricsModelCache.put("dna_high", 38.0);
+        metricsModelCache.put("dna_low_false", 1.5);
+        metricsModelCache.put("dna_low_true", 0.01);
         
         try {
             System.out.println("Starting Load Balancer on port " + LB_PORT);

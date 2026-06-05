@@ -253,6 +253,18 @@ public class LoadBalancerHandler implements HttpHandler {
                                         long w = Long.parseLong(p.getOrDefault("w", "400"));
                                         long h = Long.parseLong(p.getOrDefault("h", "300"));
                                         updateLocalEMA("fractals", rawCost, w * h);
+                                    } else if (path.contains("dna")) {
+                                        long minLength = Long.parseLong(p.getOrDefault("minLength", "1"));
+                                        String stopOnFirst = p.getOrDefault("stopOnFirst", "false").toLowerCase();
+                                        long l1 = p.getOrDefault("seq1", "").length();
+                                        long l2 = p.getOrDefault("seq2", "").length();
+                                        long workUnits = Math.max(1L, l1 - minLength + 1) * Math.max(1L, l2 - minLength + 1);
+                                        
+                                        String emaKey;
+                                        if (minLength >= 13) emaKey = "dna_high";
+                                        else if ("true".equals(stopOnFirst)) emaKey = "dna_low_true";
+                                        else emaKey = "dna_low_false";
+                                        updateLocalEMA(emaKey, rawCost, workUnits);
                                     }
                                 } catch (Exception e) {
                                     LOGGER.warning("[Metrics] Error in Fast Loop: " + e.getMessage());
@@ -363,19 +375,25 @@ public class LoadBalancerHandler implements HttpHandler {
             java.util.Map<String, String> params = parseQuery(query);
 
             if (path.contains("dna")) {
-                // Exact match check for chaotic DNA workloads
-                Double cachedCost = LoadBalancer.dnaExactCache.get(cacheKey);
-                if (cachedCost != null) {
-                    LOGGER.info("[Estimation] DNA exact match hit. Cost: " + cachedCost);
-                    return (int) Math.max(1L, cachedCost.longValue() / 1_000_000L);
-                } else {
-                    String s1 = params.getOrDefault("seq1", "");
-                    String s2 = params.getOrDefault("seq2", "");
-                    long rawCost = (long) s1.length() * (long) s2.length() * 16L;
-                    int cost = (int) Math.max(1L, rawCost / 1_000_000L);
-                    LOGGER.info("[Estimation] DNA fallback heuristic -> Raw: " + rawCost + " Units: " + cost);
-                    return cost;
-                }
+                long minLength = Long.parseLong(params.getOrDefault("minLength", "1"));
+                String stopOnFirst = params.getOrDefault("stopOnFirst", "false").toLowerCase();
+                String seq1 = params.getOrDefault("seq1", "");
+                String seq2 = params.getOrDefault("seq2", "");
+                long l1 = seq1.length();
+                long l2 = seq2.length();
+                
+                String emaKey;
+                if (minLength >= 13) emaKey = "dna_high";
+                else if ("true".equals(stopOnFirst)) emaKey = "dna_low_true";
+                else emaKey = "dna_low_false";
+                
+                Double beta = LoadBalancer.metricsModelCache.getOrDefault(emaKey, 38.0);
+                long workUnits = Math.max(1L, l1 - minLength + 1) * Math.max(1L, l2 - minLength + 1);
+                
+                long rawCost = (long) (beta * workUnits);
+                int cost = (int) Math.max(1L, rawCost / 1_000_000L);
+                LOGGER.info("[Estimation] DNA EMA (" + emaKey + " Beta=" + String.format("%.2f", beta) + ") -> Raw: " + rawCost + " Units: " + cost);
+                return Math.min(cost, maxAllowedEstimate);
             } else if (path.contains("fractal")) {
                 // Fetch dynamic EMA coefficient
                 Double beta = LoadBalancer.metricsModelCache.getOrDefault("fractals", 2579.23);
