@@ -82,7 +82,7 @@ public class LoadBalancerHandler implements HttpHandler {
         enqueueJob(exchange, path, query, estimatedWork);
     }
 
-    // Método extraído para enfileirar o Job caso falhe o FaaS ou seja um request grande
+    // Enqueue job if FaaS offloading is skipped or fails
     private void enqueueJob(HttpExchange exchange, String path, String query, int estimatedWork) {
         Job job = new Job(exchange, path, query, estimatedWork);
 
@@ -136,7 +136,7 @@ public class LoadBalancerHandler implements HttpHandler {
 
                 forwardRequestAsync(targetNode.getIp(), job.path, job.query)
                         .whenComplete((response, throwable) -> {
-                            // O callback é executado quando o pedido termina
+                            // Callback executed upon request completion
                             targetNode.getWork().addAndGet(-job.estimatedWork);
 
                             if (throwable != null || (response != null && response.statusCode() >= 500)) {
