@@ -19,7 +19,10 @@ public class MSSPoller implements Runnable {
     private static final String TABLE_NAME = "RequestHistory";
     
     // EMA Learning Rate: 20% new data, 80% historical data
-    private static final double ALPHA = 0.2; 
+    private static final double ALPHA = 0.2;
+
+    // Private baseline memory (no concurrency control needed)
+    private final Map<String, Double> baselineMetricsModel = new HashMap<>();
 
     private final DynamoDbClient dynamoDb;
     private long lastPollTime;
@@ -32,6 +35,15 @@ public class MSSPoller implements Runnable {
         
         // Start polling from 1 minute ago to capture recent metrics
         this.lastPollTime = System.currentTimeMillis() - 60000;
+
+        // Init baseline heuristics
+        baselineMetricsModel.put("fractals", 2579.23);
+        baselineMetricsModel.put("grayscott_center_false", 365.29);
+        baselineMetricsModel.put("grayscott_center_true", 365.29);
+        baselineMetricsModel.put("grayscott_ring_false", 365.60);
+        baselineMetricsModel.put("grayscott_ring_true", 210.13);
+        baselineMetricsModel.put("grayscott_stripe_false", 365.31);
+        baselineMetricsModel.put("grayscott_stripe_true", 365.31);
     }
 
     @Override
@@ -106,14 +118,15 @@ public class MSSPoller implements Runnable {
 
         // Calculate observed cost per work unit (Beta)
         double observedCostPerUnit = (double) actualCost / workUnits;
-        
-        // Fetch current EMA from cache (default to observed if empty)
-        double currentEMA = LoadBalancer.metricsModelCache.getOrDefault(cacheKey, observedCostPerUnit);
+
+        // Fetch baseline EMA from internal cache
+        double currentBaselineEMA = this.baselineMetricsModel.getOrDefault(cacheKey, observedCostPerUnit);
         
         // Apply Exponential Moving Average formula
-        double newEMA = (ALPHA * observedCostPerUnit) + ((1.0 - ALPHA) * currentEMA);
-        
-        // Update cache with specific topological key
+        double newEMA = (ALPHA * observedCostPerUnit) + ((1.0 - ALPHA) * currentBaselineEMA);
+
+        // Update internal baseline model and LB cache with new EMA value
+        this.baselineMetricsModel.put(cacheKey, newEMA);
         LoadBalancer.metricsModelCache.put(cacheKey, newEMA);
     }
 

@@ -331,9 +331,10 @@ public class LoadBalancerHandler implements HttpHandler {
     private void updateLocalEMA(String key, long actualCost, long workUnits) {
         if (workUnits <= 0) return;
         double observedCost = (double) actualCost / workUnits;
+
         double currentEMA = LoadBalancer.metricsModelCache.getOrDefault(key, observedCost);
-        // Alpha = 0.2
-        double newEMA = (0.2 * observedCost) + (0.8 * currentEMA);
+
+        double newEMA = (0.05 * observedCost) + (0.95 * currentEMA); // Alpha = 0.05
         LoadBalancer.metricsModelCache.put(key, newEMA);
     }
 
