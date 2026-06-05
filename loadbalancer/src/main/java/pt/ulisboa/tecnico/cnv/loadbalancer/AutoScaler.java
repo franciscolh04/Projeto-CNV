@@ -22,7 +22,7 @@ public class AutoScaler extends Thread {
     
     // Scale thresholds based on Weighted Score (0.0 to 1.0+)
     private static final double SCALE_OUT_THRESHOLD = 0.7;    // Scale out when average score > 0.7
-    private static final double SCALE_IN_THRESHOLD = SCALE_OUT_THRESHOLD-0.20;  // Scale in when average score < 0.3
+    private static final double SCALE_IN_THRESHOLD = SCALE_OUT_THRESHOLD-0.20;  // Scale in when average score < 0.5
     
     // Weighted Score weights
     private static final double WEIGHT_CPU = 0.4;           // CPU contribution (40%)
