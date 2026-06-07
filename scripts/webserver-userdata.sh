@@ -11,6 +11,8 @@ INSTANCE_ID=$(/usr/bin/curl \
     -H "X-aws-ec2-metadata-token: $TOKEN" \
     -s http://169.254.169.254/latest/meta-data/instance-id)
 
+source /home/ec2-user/config.sh
+
 # Launch the webserver with Javassist instrumentation agent
 exec /usr/bin/java \
     -Xmx512m \

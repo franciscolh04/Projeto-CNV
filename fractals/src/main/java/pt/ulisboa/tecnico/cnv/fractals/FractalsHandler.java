@@ -17,16 +17,19 @@ import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 
+import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.PutItemResponse;
 
 public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, String>, String> {
 
     // DynamoDB client for saving request metrics
     private static final DynamoDbAsyncClient dynamoClient = DynamoDbAsyncClient.builder()
             .region(Region.US_EAST_1)
+            .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
             .build();
 
     /**
@@ -96,7 +99,8 @@ public class FractalsHandler implements HttpHandler, RequestHandler<Map<String, 
                         .item(item)
                         .build();
 
-                dynamoClient.putItem(putReq);
+                PutItemResponse f = dynamoClient.putItem(putReq).join();
+                System.out.println("[Metrics] DynamoDB putItem response: " + f.toString());
             } catch (Exception e) {
                 System.err.println("[Metrics] Failed to write to DynamoDB: " + e.getMessage());
             }
